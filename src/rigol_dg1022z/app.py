@@ -4,6 +4,7 @@ import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QAbstractSpinBox,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGridLayout,
+    QGraphicsDropShadowEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -52,25 +54,29 @@ class ChannelCard(QFrame):
         self.channel = channel
         self.setObjectName("ChannelCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(116)
+        self.setFixedHeight(42)
+        self.setMinimumWidth(260)
+        self.setMaximumWidth(332)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(6)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 5, 8, 5)
+        layout.setSpacing(8)
 
         self.title = QLabel(f"CH{channel}")
         self.title.setObjectName("ChannelCardTitle")
+        self.title.setFixedWidth(38)
         self.meta = QLabel("SIN | 1 kHz | 2 Vpp")
         self.meta.setObjectName("ChannelCardMeta")
+        self.meta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.output = QLabel("输出 OFF")
         self.output.setObjectName("ChannelOutputBadge")
-        self.output.setFixedSize(86, 26)
+        self.output.setFixedSize(68, 22)
         self.output.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.title)
-        layout.addWidget(self.meta)
-        layout.addWidget(self.output)
-        layout.addStretch(1)
+        layout.addWidget(self.meta, 1)
+        layout.addWidget(self.output, 0, Qt.AlignVCenter)
 
     def set_active(self, active: bool) -> None:
         self.setProperty("active", active)
@@ -79,7 +85,7 @@ class ChannelCard(QFrame):
 
     def set_summary(self, settings: ChannelSettings) -> None:
         self.meta.setText(
-            f"{settings.waveform.upper()} | {_format_timing(settings)} | {_format_level_short(settings)}"
+            f"{_format_waveform_name(settings.waveform)} | {_format_timing(settings)} | {_format_level_short(settings)}"
         )
         output_on = bool(settings.output_enabled)
         self.output.setText("输出 ON" if output_on else "输出 OFF")
@@ -97,7 +103,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RIGOL DG1022Z 上位机")
-        self.resize(1400, 900)
+        self.resize(1600, 980)
         self._connected = False
         self._loading_form = False
         self._config_path = default_config_path()
@@ -125,31 +131,35 @@ class MainWindow(QMainWindow):
 
         content = QHBoxLayout()
         content.setSpacing(14)
-        content.addWidget(self._build_left_panel())
         content.addWidget(self._build_center_panel(), 1)
         content.addWidget(self._build_right_panel())
         root.addLayout(content, 1)
 
         self._build_log_window()
+        self._apply_elevation()
         self._connect_signals()
 
     def _build_top_bar(self) -> QWidget:
         top = QFrame()
+        self.top_bar = top
         top.setObjectName("TopBar")
+        top.setFixedHeight(72)
         layout = QHBoxLayout(top)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 16, 12, 16)
+        layout.setSpacing(6)
 
         brand = QFrame(top)
         brand.setObjectName("BrandBlock")
+        brand.setFixedWidth(318)
         brand_layout = QHBoxLayout(brand)
         brand_layout.setContentsMargins(0, 0, 14, 0)
         brand_layout.setSpacing(10)
         badge = QLabel("DG", brand)
         badge.setObjectName("BrandBadge")
-        badge.setFixedSize(34, 34)
+        badge.setFixedSize(40, 40)
         badge.setAlignment(Qt.AlignCenter)
         title_wrap = QWidget(brand)
+        title_wrap.setObjectName("BrandTextBlock")
         title_layout = QVBoxLayout(title_wrap)
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(0)
@@ -162,65 +172,70 @@ class MainWindow(QMainWindow):
         brand_layout.addWidget(badge)
         brand_layout.addWidget(title_wrap)
 
+        status_wrap = QFrame(top)
+        status_wrap.setObjectName("StatusIndicator")
+        status_layout = QHBoxLayout(status_wrap)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(6)
+        self.status_dot = QLabel(status_wrap)
+        self.status_dot.setObjectName("StatusDot")
+        self.status_dot.setFixedSize(10, 10)
+        self.status_text = QLabel("未连接", status_wrap)
+        self.status_text.setObjectName("StatusText")
+        status_layout.addWidget(self.status_dot)
+        status_layout.addWidget(self.status_text)
+        status_wrap.setFixedWidth(64)
+
         visa_label = QLabel("VISA", top)
         visa_label.setObjectName("FieldLabel")
+        visa_label.setFixedWidth(48)
         self.address = QComboBox(top)
         self.address.setEditable(True)
         self.address.addItem("TCPIP::192.168.1.191::INSTR")
-        self.address.setFixedWidth(250)
+        self.address.setFixedWidth(226)
 
         self.btn_refresh = QPushButton("刷新", top)
+        self.btn_refresh.setFixedWidth(64)
         self.btn_connect = QPushButton("连接", top)
-        self.btn_connect.setObjectName("PrimaryButton")
-        self.btn_disconnect = QPushButton("断开", top)
-        self.btn_idn = QPushButton("IDN", top)
-        self.status = QLabel("未连接", top)
-        self.status.setObjectName("ConnStatus")
-        self.status.setAlignment(Qt.AlignCenter)
-        self.status.setFixedWidth(138)
+        self.btn_connect.setObjectName("ConnectionButton")
+        self.btn_connect.setFixedWidth(96)
 
-        self.btn_log = QPushButton("运行日志", top)
-        self.btn_error = QPushButton("查询错误", top)
-        self.btn_phase = QPushButton("相位同步", top)
+        self.btn_log = QPushButton("日志 / 指令", top)
+        self.btn_log.setFixedWidth(96)
 
         for control in (
+            status_wrap,
             self.address,
             self.btn_refresh,
             self.btn_connect,
-            self.btn_disconnect,
-            self.btn_idn,
-            self.status,
             self.btn_log,
-            self.btn_error,
-            self.btn_phase,
         ):
-            control.setFixedHeight(34)
+            control.setFixedHeight(40)
 
         layout.addWidget(brand)
+        layout.addSpacing(74)
+        layout.addWidget(status_wrap)
         layout.addWidget(visa_label)
         layout.addWidget(self.address)
+        layout.addSpacing(18)
         layout.addWidget(self.btn_refresh)
+        layout.addSpacing(14)
         layout.addWidget(self.btn_connect)
-        layout.addWidget(self.btn_disconnect)
-        layout.addWidget(self.btn_idn)
-        layout.addWidget(self.status)
         layout.addStretch(1)
         layout.addWidget(self.btn_log)
-        layout.addWidget(self.btn_error)
-        layout.addWidget(self.btn_phase)
         return top
 
     def _build_log_window(self) -> None:
         self.log_window = QDialog(self)
-        self.log_window.setWindowTitle("运行日志")
+        self.log_window.setWindowTitle("日志 / 指令")
         self.log_window.resize(760, 360)
         layout = QVBoxLayout(self.log_window)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        title = QLabel("运行日志")
+        title = QLabel("日志 / 指令")
         title.setObjectName("MainTitle")
-        hint = QLabel("连接、下发、查询和错误信息会记录在这里")
+        hint = QLabel("连接状态、参数下发、SCPI 指令和错误信息会记录在这里")
         hint.setObjectName("SubtleText")
         self.log = QTextEdit(self.log_window)
         self.log.setObjectName("LogText")
@@ -228,8 +243,10 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
+        self.btn_error = QPushButton("查询错误", self.log_window)
         self.btn_clear_log = QPushButton("清空日志", self.log_window)
         self.btn_close_log = QPushButton("关闭", self.log_window)
+        actions.addWidget(self.btn_error)
         actions.addWidget(self.btn_clear_log)
         actions.addWidget(self.btn_close_log)
 
@@ -238,81 +255,155 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log, 1)
         layout.addLayout(actions)
 
-    def _build_left_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setObjectName("LeftPanel")
-        panel.setFixedWidth(236)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
-
-        title = QLabel("通道与输出")
-        title.setObjectName("PanelTitle")
-        layout.addWidget(title)
-
-        self.channel_cards = {
-            1: ChannelCard(1, panel),
-            2: ChannelCard(2, panel),
-        }
-        for card in self.channel_cards.values():
-            layout.addWidget(card)
-
-        quick = QFrame(panel)
-        quick.setObjectName("Card")
-        quick_layout = QVBoxLayout(quick)
-        quick_layout.setContentsMargins(14, 14, 14, 14)
-        quick_layout.setSpacing(10)
-        quick_title = QLabel("快捷操作")
-        quick_title.setObjectName("CardTitle")
-        self.btn_apply = QPushButton("应用当前通道")
-        self.btn_apply.setObjectName("PrimaryButton")
-        self.btn_apply_all = QPushButton("应用双通道")
-        self.btn_output_on = QPushButton("输出开")
-        self.btn_output_off = QPushButton("输出关")
-        self.btn_fire = QPushButton("软件触发 Burst")
-        self.load = QComboBox()
-        self.load.addItem("负载 High-Z", "INF")
-        self.load.addItem("负载 50 ohm", "50")
-        quick_layout.addWidget(quick_title)
-        quick_layout.addWidget(self.btn_apply)
-        quick_layout.addWidget(self.btn_apply_all)
-        quick_layout.addWidget(self.btn_output_on)
-        quick_layout.addWidget(self.btn_output_off)
-        quick_layout.addWidget(self.btn_fire)
-        quick_layout.addWidget(self.load)
-        layout.addWidget(quick)
-        layout.addStretch(1)
-        return panel
-
     def _build_center_panel(self) -> QWidget:
         panel = QFrame()
+        self.center_panel = panel
         panel.setObjectName("CenterPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(24, 18, 24, 18)
-        layout.setSpacing(8)
+        layout.setContentsMargins(24, 22, 24, 24)
+        layout.setSpacing(22)
 
-        title = QLabel("波形显示与选择")
+        title = QLabel("波形工作区")
         title.setObjectName("MainTitle")
+        title.setFixedHeight(36)
+        title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(title)
 
+        control_row = QWidget(panel)
+        control_row.setObjectName("WorkControlRow")
+        control_row.setFixedHeight(132)
+        control_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        control_row_layout = QHBoxLayout(control_row)
+        control_row_layout.setContentsMargins(0, 0, 0, 0)
+        control_row_layout.setSpacing(20)
+
+        controls = QFrame(control_row)
+        controls.setObjectName("ChannelActionStrip")
+        controls.setFixedHeight(128)
+        controls.setMinimumWidth(620)
+        controls.setMaximumWidth(760)
+        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(16, 10, 18, 16)
+        controls_layout.setSpacing(8)
+
+        channel_area = QWidget(controls)
+        channel_area.setObjectName("StripRow")
+        channel_area.setFixedHeight(42)
+        channel_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        channel_layout = QHBoxLayout(channel_area)
+        channel_layout.setContentsMargins(0, 0, 0, 0)
+        channel_layout.setSpacing(8)
+        channel_label = QLabel("通道", channel_area)
+        channel_label.setObjectName("StripRowLabel")
+        channel_label.setFixedWidth(34)
+        channel_layout.addWidget(channel_label, 0, Qt.AlignVCenter)
+        self.channel_cards = {
+            1: ChannelCard(1, controls),
+            2: ChannelCard(2, controls),
+        }
+        for card in self.channel_cards.values():
+            channel_layout.addWidget(card, 1)
+        channel_layout.addStretch(1)
+
+        actions = QFrame(controls)
+        actions.setObjectName("ActionGrid")
+        actions.setFixedHeight(42)
+        actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(10)
+        action_label = QLabel("操作", actions)
+        action_label.setObjectName("StripRowLabel")
+        action_label.setFixedWidth(34)
+        self.btn_apply = QPushButton("应用当前通道", actions)
+        self.btn_apply.setObjectName("PrimaryButton")
+        self.btn_apply_all = QPushButton("应用双通道", actions)
+        self.btn_output_toggle = QPushButton("输出 OFF", actions)
+        self.btn_output_toggle.setObjectName("OutputToggleButton")
+        self.btn_fire = QPushButton("软件触发 Burst", actions)
+        self.load = QComboBox(actions)
+        self.load.addItem("负载 High-Z", "INF")
+        self.load.addItem("负载 50 ohm", "50")
+        for button in (
+            self.btn_apply,
+            self.btn_apply_all,
+            self.btn_output_toggle,
+            self.btn_fire,
+        ):
+            button.setFixedHeight(36)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_apply.setMinimumWidth(106)
+        self.btn_apply.setMaximumWidth(126)
+        self.btn_apply_all.setMinimumWidth(94)
+        self.btn_apply_all.setMaximumWidth(112)
+        self.btn_output_toggle.setMinimumWidth(82)
+        self.btn_output_toggle.setMaximumWidth(96)
+        self.btn_fire.setMinimumWidth(104)
+        self.btn_fire.setMaximumWidth(126)
+        self.load.setFixedHeight(36)
+        self.load.setMinimumWidth(112)
+        self.load.setMaximumWidth(130)
+        self.load.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        actions_layout.addWidget(action_label, 0, Qt.AlignVCenter)
+        actions_layout.addWidget(self.btn_apply)
+        actions_layout.addWidget(self.btn_apply_all)
+        actions_layout.addWidget(self.btn_output_toggle)
+        actions_layout.addWidget(self.btn_fire)
+        actions_layout.addWidget(self.load)
+        actions_layout.addStretch(1)
+
+        controls_layout.addWidget(channel_area)
+        controls_layout.addWidget(actions)
+
+        summary = QFrame(control_row)
+        summary.setObjectName("ChannelSummaryCard")
+        summary.setFixedHeight(118)
+        summary.setMinimumWidth(208)
+        summary.setMaximumWidth(284)
+        summary.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        summary_layout = QVBoxLayout(summary)
+        summary_layout.setContentsMargins(14, 12, 14, 12)
+        summary_layout.setSpacing(3)
+        summary_title = QLabel("当前通道摘要", summary)
+        summary_title.setObjectName("SummaryTitle")
+        self.channel_summary_active = QLabel(summary)
+        self.channel_summary_active.setObjectName("SummaryLineStrong")
+        self.channel_summary_detail = QLabel(summary)
+        self.channel_summary_detail.setObjectName("SummaryLine")
+        self.channel_summary_state = QLabel(summary)
+        self.channel_summary_state.setObjectName("SummaryLine")
+        summary_layout.addWidget(summary_title)
+        summary_layout.addSpacing(6)
+        summary_layout.addWidget(self.channel_summary_active)
+        summary_layout.addWidget(self.channel_summary_detail)
+        summary_layout.addWidget(self.channel_summary_state)
+        summary_layout.addStretch(1)
+
+        control_row_layout.addWidget(controls, 760, Qt.AlignTop)
+        control_row_layout.addWidget(summary, 284, Qt.AlignTop)
+        control_row_layout.addStretch(1)
+        layout.addWidget(control_row)
+
         self.wave_preview = WaveformPreview(panel)
-        self.wave_preview.setFixedHeight(246)
+        self.wave_preview.setFixedHeight(258)
         self.wave_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(self.wave_preview)
 
         selector = QFrame(panel)
         selector.setObjectName("Card")
-        selector.setMinimumHeight(148)
-        selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        selector.setFixedHeight(158)
+        selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         selector_layout = QVBoxLayout(selector)
-        selector_layout.setContentsMargins(14, 12, 14, 12)
-        selector_layout.setSpacing(8)
-        selector_title = QLabel("波形选择")
+        selector_layout.setContentsMargins(24, 14, 24, 14)
+        selector_layout.setSpacing(10)
+        selector_title = QLabel("波形类型")
         selector_title.setObjectName("CardTitle")
+        selector_title.setFixedHeight(26)
         selector_layout.addWidget(selector_title)
         wave_grid = QGridLayout()
-        wave_grid.setHorizontalSpacing(6)
-        wave_grid.setVerticalSpacing(6)
+        wave_grid.setHorizontalSpacing(12)
+        wave_grid.setVerticalSpacing(0)
         self.wave_group = QButtonGroup(self)
         self.wave_group.setExclusive(True)
         self.wave_buttons: dict[str, QPushButton] = {}
@@ -322,42 +413,38 @@ class MainWindow(QMainWindow):
             button.setCheckable(True)
             button.setToolTip(label)
             button.setProperty("waveform", value)
+            button.setFixedHeight(70)
+            button.setMinimumWidth(118)
+            button.setMaximumWidth(150)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.clicked.connect(lambda _checked=False, v=value: self._set_waveform(v))
             self.wave_group.addButton(button)
             self.wave_buttons[value] = button
-            wave_grid.addWidget(button, index // 5, index % 5)
+            wave_grid.addWidget(button, 0, index)
+            wave_grid.setColumnStretch(index, 1)
+        wave_grid.setColumnStretch(len(WAVEFORM_CHOICES), 1)
         selector_layout.addLayout(wave_grid)
         layout.addWidget(selector)
 
-        summary = QFrame(panel)
-        summary.setObjectName("Card")
-        summary.setMinimumHeight(96)
-        summary.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        summary_layout = QVBoxLayout(summary)
-        summary_layout.setContentsMargins(16, 12, 16, 12)
-        summary_layout.setSpacing(6)
-        summary_title = QLabel("当前参数摘要")
-        summary_title.setObjectName("CardTitle")
-        self.wave_summary = QLabel()
-        self.wave_summary.setObjectName("SummaryLine")
-        self.level_summary = QLabel()
-        self.level_summary.setObjectName("SummaryLine")
-        self.burst_summary = QLabel()
-        self.burst_summary.setObjectName("SummaryLine")
-        summary_layout.addWidget(summary_title)
-        summary_layout.addWidget(self.wave_summary)
-        summary_layout.addWidget(self.level_summary)
-        summary_layout.addWidget(self.burst_summary)
-        layout.addWidget(summary)
+        advanced_note = QLabel("高级内置波形折叠到「更多」或二级菜单，不占主界面", panel)
+        advanced_note.setObjectName("AdvancedNote")
+        advanced_note.setFixedHeight(48)
+        advanced_note.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        layout.addWidget(advanced_note)
+
+        layout.addStretch(1)
         return panel
 
     def _build_right_panel(self) -> QWidget:
         panel = QFrame()
+        self.right_panel = panel
         panel.setObjectName("RightPanel")
-        panel.setFixedWidth(386)
+        panel.setMinimumWidth(360)
+        panel.setMaximumWidth(440)
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(26, 16, 26, 16)
+        layout.setSpacing(12)
 
         title = QLabel("参数设置")
         title.setObjectName("PanelTitle")
@@ -490,19 +577,15 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.btn_refresh.clicked.connect(self._refresh_resources)
-        self.btn_connect.clicked.connect(self._connect)
-        self.btn_disconnect.clicked.connect(self._disconnect)
-        self.btn_idn.clicked.connect(self._query_idn)
+        self.btn_connect.clicked.connect(self._toggle_connection)
         self.btn_log.clicked.connect(self._show_log_window)
         self.btn_clear_log.clicked.connect(self.log.clear)
         self.btn_close_log.clicked.connect(self.log_window.hide)
         self.address.currentTextChanged.connect(self._save_config)
         self.btn_apply.clicked.connect(self._apply_current)
         self.btn_apply_all.clicked.connect(self._apply_all)
-        self.btn_output_on.clicked.connect(lambda: self._set_output(True))
-        self.btn_output_off.clicked.connect(lambda: self._set_output(False))
+        self.btn_output_toggle.clicked.connect(self._toggle_output)
         self.btn_fire.clicked.connect(self._fire_burst)
-        self.btn_phase.clicked.connect(self._align_phase)
         self.btn_error.clicked.connect(self._query_error)
         for channel, card in self.channel_cards.items():
             card.selected.connect(self._select_channel)
@@ -703,7 +786,7 @@ class MainWindow(QMainWindow):
         self.burst_status.style().unpolish(self.burst_status)
         self.burst_status.style().polish(self.burst_status)
         self.burst_mode.setEnabled(burst.fields)
-        self.burst_details.setVisible(True)
+        self.burst_details.setVisible(burst.fields)
         self.burst_trigger_source.setEnabled(burst.trigger_source)
         _set_spin_enabled(self.burst_cycles, burst.cycles)
         _set_spin_enabled(self.burst_internal_period, burst.internal_period)
@@ -711,16 +794,14 @@ class MainWindow(QMainWindow):
         _set_spin_enabled(self.burst_delay, burst.delay)
         self.burst_gate_polarity.setEnabled(burst.gate_polarity)
         self.burst_trigger_slope.setEnabled(burst.trigger_slope)
-        for field in (
-            self.burst_trigger_source,
-            self.burst_cycles_editor,
-            self.burst_internal_period_editor,
-            self.burst_phase_editor,
-            self.burst_delay_editor,
-            self.burst_gate_polarity,
-            self.burst_trigger_slope,
-        ):
-            _set_form_row_visible(field, True)
+        _set_form_row_visible(self.burst_mode, burst.fields)
+        _set_form_row_visible(self.burst_trigger_source, burst.trigger_source)
+        _set_form_row_visible(self.burst_cycles_editor, burst.cycles)
+        _set_form_row_visible(self.burst_internal_period_editor, burst.internal_period)
+        _set_form_row_visible(self.burst_phase_editor, burst.phase)
+        _set_form_row_visible(self.burst_delay_editor, burst.delay)
+        _set_form_row_visible(self.burst_gate_polarity, burst.gate_polarity)
+        _set_form_row_visible(self.burst_trigger_slope, burst.trigger_slope)
 
     def _refresh_view(self) -> None:
         current = self._settings_from_form()
@@ -744,11 +825,13 @@ class MainWindow(QMainWindow):
                 ramp_symmetry_percent=current.ramp_symmetry_percent,
             )
         )
-        self.wave_summary.setText(
-            f"频率：{timing_text}    周期：{current.period_s:g} s    相位：{current.phase_deg:g} deg"
+        self.channel_summary_active.setText(f"CH{current.channel} Active")
+        self.channel_summary_detail.setText(
+            f"{_format_waveform_name(current.waveform)} | {timing_text} | {level_text}"
         )
-        self.level_summary.setText(f"电平：{level_text}    负载：{current.load}")
-        self.burst_summary.setText(f"Burst：{'ON' if current.burst.enabled else 'OFF'}    输出：{'ON' if current.output_enabled else 'OFF'}")
+        self.channel_summary_state.setText(
+            f"{burst_text} | {output_text} | {_format_load(current.load)}"
+        )
         self._update_action_state()
 
     def _selected_waveform(self) -> str:
@@ -794,6 +877,12 @@ class MainWindow(QMainWindow):
         self._set_connected(False, "未连接")
         self._log("已断开")
 
+    def _toggle_connection(self) -> None:
+        if self._connected:
+            self._disconnect()
+        else:
+            self._connect()
+
     def _query_idn(self) -> None:
         try:
             idn = self.client.query_idn()
@@ -806,6 +895,7 @@ class MainWindow(QMainWindow):
         self._save_active_settings()
         self._save_config()
         settings = self.channel_settings[self.active_channel]
+        self._log(f"准备下发 CH{settings.channel}: {_format_channel_brief(settings)}")
         try:
             commands = self.client.apply_channel(settings)
         except Exception as exc:
@@ -819,25 +909,30 @@ class MainWindow(QMainWindow):
         try:
             for channel in (1, 2):
                 settings = self.channel_settings[channel]
+                self._log(f"准备下发 CH{settings.channel}: {_format_channel_brief(settings)}")
                 self.client.apply_channel(settings)
         except Exception as exc:
             self._show_error("应用双通道失败", exc)
             return
         self._log("CH1/CH2 参数已应用")
 
+    def _toggle_output(self) -> None:
+        self._save_active_settings()
+        enabled = not self.channel_settings[self.active_channel].output_enabled
+        self._set_output(enabled)
+
     def _set_output(self, enabled: bool) -> None:
         self._save_active_settings()
         current = self.channel_settings[self.active_channel]
-        self.channel_settings[self.active_channel] = ChannelSettings(
-            **{**current.__dict__, "output_enabled": enabled}
-        )
-        self._load_settings_to_form(self.channel_settings[self.active_channel])
-        self._save_config()
+        next_settings = ChannelSettings(**{**current.__dict__, "output_enabled": enabled})
         try:
             self.client.set_output(self.active_channel, enabled)
         except Exception as exc:
             self._show_error("设置输出失败", exc)
             return
+        self.channel_settings[self.active_channel] = next_settings
+        self._load_settings_to_form(next_settings)
+        self._save_config()
         self._log(f"CH{self.active_channel} 输出 {'打开' if enabled else '关闭'}")
 
     def _fire_burst(self) -> None:
@@ -866,11 +961,16 @@ class MainWindow(QMainWindow):
 
     def _set_connected(self, connected: bool, text: str) -> None:
         self._connected = connected
-        self.status.setText(text)
-        self.status.setProperty("connected", connected)
-        self.status.setProperty("failed", text == "连接失败")
-        self.status.style().unpolish(self.status)
-        self.status.style().polish(self.status)
+        failed = text == "连接失败"
+        display_text = "已连接" if connected else text
+        self.status_text.setText(display_text)
+        self.status_text.setToolTip(text)
+        self.status_text.setProperty("connected", connected)
+        self.status_text.setProperty("failed", failed)
+        self.status_dot.setProperty("connected", connected)
+        self.status_dot.setProperty("failed", failed)
+        _repolish(self.status_text)
+        _repolish(self.status_dot)
         self._update_action_state()
 
     def _update_action_state(self) -> None:
@@ -882,14 +982,15 @@ class MainWindow(QMainWindow):
             settings.burst.mode,
             settings.burst.trigger_source,
         )
-        self.btn_connect.setEnabled(not connected)
-        self.btn_disconnect.setEnabled(connected)
-        self.btn_idn.setEnabled(connected)
+        self.btn_connect.setText("断开" if connected else "连接")
+        self.btn_connect.setProperty("connected", connected)
+        _repolish(self.btn_connect)
         self.btn_apply.setEnabled(connected)
         self.btn_apply_all.setEnabled(connected)
-        self.btn_output_on.setEnabled(connected)
-        self.btn_output_off.setEnabled(connected)
-        self.btn_phase.setEnabled(connected)
+        self.btn_output_toggle.setEnabled(connected)
+        self.btn_output_toggle.setText("输出 ON" if settings.output_enabled else "输出 OFF")
+        self.btn_output_toggle.setProperty("on", settings.output_enabled)
+        _repolish(self.btn_output_toggle)
         self.btn_error.setEnabled(connected)
         self.btn_fire.setEnabled(connected and burst.software_trigger)
 
@@ -907,6 +1008,18 @@ class MainWindow(QMainWindow):
         ts = datetime.now().strftime("%H:%M:%S")
         if hasattr(self, "log"):
             self.log.append(f"{ts}  {line}")
+
+    def _apply_elevation(self) -> None:
+        for widget, blur, offset, alpha in (
+            (self.top_bar, 18, 3, 26),
+            (self.center_panel, 20, 4, 20),
+            (self.right_panel, 20, 4, 18),
+        ):
+            shadow = QGraphicsDropShadowEffect(widget)
+            shadow.setBlurRadius(blur)
+            shadow.setOffset(0, offset)
+            shadow.setColor(QColor(30, 55, 82, alpha))
+            widget.setGraphicsEffect(shadow)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLE)
@@ -1052,8 +1165,40 @@ def _format_level_short(settings: ChannelSettings) -> str:
     return f"{settings.amplitude_vpp:g} Vpp"
 
 
+def _format_waveform_name(waveform: str) -> str:
+    names = {
+        "SIN": "Sine",
+        "SQU": "Square",
+        "PULS": "Pulse",
+        "RAMP": "Ramp",
+        "NOIS": "Noise",
+        "USER": "Arb",
+        "DC": "DC",
+    }
+    token = waveform.strip().upper()
+    return names.get(token, token)
+
+
+def _format_load(load: str) -> str:
+    return "High-Z" if load == "INF" else "50 ohm"
+
+
+def _format_channel_brief(settings: ChannelSettings) -> str:
+    burst = "Burst ON" if settings.burst.enabled else "Burst OFF"
+    output = "Output ON" if settings.output_enabled else "Output OFF"
+    return (
+        f"{_format_waveform_name(settings.waveform)}, {_format_timing(settings)}, "
+        f"{_format_level(settings)}, {_format_load(settings.load)}, {burst}, {output}"
+    )
+
+
+def _repolish(widget: QWidget) -> None:
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+
+
 def _wave_button_label(label: str, value: str) -> str:
-    return value
+    return label
 
 
 APP_STYLE = """
@@ -1061,7 +1206,7 @@ QWidget {
     font-family: "Microsoft YaHei UI", "Segoe UI", Arial;
     font-size: 12px;
     color: #17283b;
-    background: #e9eff5;
+    background: #eef4fa;
 }
 QLabel, QCheckBox {
     background: transparent;
@@ -1096,29 +1241,93 @@ QScrollArea#ParameterScroll, QWidget#ParameterScrollBody {
     border: none;
 }
 QFrame#TopBar, QFrame#CenterPanel {
-    background: #f8fafc;
-    border: 1px solid #d8e0ea;
+    background: #fbfdff;
+    border: 1px solid #dce5ef;
+    border-radius: 11px;
+}
+QFrame#RightPanel {
+    background: #f3f7fb;
+    border: 1px solid #dce5ef;
+    border-radius: 11px;
+}
+QFrame#ChannelActionStrip {
+    background: #ffffff;
+    border: 1px solid #dce5ef;
     border-radius: 10px;
 }
-QFrame#LeftPanel, QFrame#RightPanel {
-    background: #f2f5f9;
-    border: 1px solid #d8e0ea;
+QFrame#ChannelActionStrip QWidget#StripRow {
+    background: transparent;
+    border: none;
+}
+QWidget#WorkControlRow {
+    background: transparent;
+}
+QFrame#ChannelSummaryCard {
+    background: #ffffff;
+    border: 1px solid #dce5ef;
     border-radius: 10px;
+}
+QFrame#ActionGrid {
+    background: transparent;
+    border: none;
+}
+QFrame#ActionGrid QPushButton, QFrame#ActionGrid QComboBox {
+    min-height: 32px;
+    padding: 2px 8px;
+    font-size: 12px;
 }
 QFrame#BrandBlock {
     background: transparent;
     border-right: 1px solid #d8e0ea;
 }
+QFrame#StatusIndicator {
+    background: transparent;
+    border: none;
+}
+QLabel#StatusDot {
+    background: #e05a5a;
+    border: 1px solid #f0b8b8;
+    border-radius: 5px;
+}
+QLabel#StatusDot[connected="true"] {
+    background: #2e9f61;
+    border-color: #bfe5cf;
+}
+QLabel#StatusDot[failed="true"] {
+    background: #d64b4b;
+    border-color: #f5b5b5;
+}
+QLabel#StatusText {
+    color: #607387;
+    font-size: 12px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#StatusText[connected="true"] {
+    color: #2e9f61;
+}
+QLabel#StatusText[failed="true"] {
+    color: #c94141;
+}
+QWidget#BrandTextBlock, QWidget#WaveformPreview {
+    background: transparent;
+}
 QLabel#BrandBadge {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #12b5cb, stop:1 #1f8ed7);
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #22b5d5, stop:1 #1f8ed7);
     color: #eef8ff;
     border-radius: 10px;
-    font-size: 15px;
+    font-size: 18px;
     font-weight: 700;
 }
-QLabel#BrandTitle, QLabel#MainTitle {
+QLabel#BrandTitle {
     color: #0f2f4d;
     font-size: 18px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#MainTitle {
+    color: #0f2f4d;
+    font-size: 22px;
     font-weight: 700;
     background: transparent;
 }
@@ -1133,41 +1342,51 @@ QLabel#FieldLabel, QLabel#PanelTitle, QLabel#CardTitle {
     background: transparent;
 }
 QLabel#PanelTitle {
-    font-size: 15px;
+    font-size: 18px;
 }
 QLabel#CardTitle {
-    font-size: 13px;
+    color: #0f2f4d;
+    font-size: 16px;
+    font-weight: 700;
 }
 QFrame#Card {
     background: #ffffff;
-    border: 1px solid #dee5ef;
+    border: 1px solid #dce5ef;
     border-radius: 10px;
 }
 QFrame#ChannelCard {
     background: #ffffff;
-    border: 1px solid #dee5ef;
-    border-radius: 16px;
+    border: 1px solid #dce5ef;
+    border-radius: 10px;
 }
 QFrame#ChannelCard[active="true"] {
-    border: 2px solid #cfe0f1;
+    background: #f7fbff;
+    border: 1px solid #82bff2;
+}
+QLabel#StripRowLabel {
+    color: #607387;
+    font-size: 11px;
+    font-weight: 700;
+    background: transparent;
 }
 QLabel#ChannelCardTitle {
     color: #1879d9;
-    font-size: 22px;
+    font-size: 13px;
     font-weight: 700;
     background: transparent;
 }
 QLabel#ChannelCardMeta {
     color: #536478;
-    font-size: 12px;
+    font-size: 11px;
     background: transparent;
 }
 QLabel#ChannelOutputBadge, QLabel#StatePill {
-    border-radius: 8px;
+    border-radius: 7px;
     background: #edf1f6;
     border: 1px solid #d9e1eb;
     color: #8a95a5;
     font-weight: 700;
+    font-size: 11px;
 }
 QLabel#ChannelOutputBadge[on="true"], QLabel#StatePill[on="true"] {
     background: #e8f6ee;
@@ -1196,8 +1415,8 @@ QFrame#RightPanel QLabel#PanelTitle {
     font-size: 14px;
 }
 QFrame#RightPanel QGroupBox {
-    background: transparent;
-    border: 1px solid #d8e3ef;
+    background: #ffffff;
+    border: 1px solid #dce5ef;
     border-radius: 10px;
     margin-top: 0;
     padding: 0;
@@ -1219,8 +1438,8 @@ QLabel#SectionTitle {
 }
 QComboBox, QDoubleSpinBox, QSpinBox {
     background: #ffffff;
-    border: 1px solid #cfd8e5;
-    border-radius: 6px;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
     min-height: 26px;
     padding: 2px 6px;
 }
@@ -1246,7 +1465,7 @@ QFrame#RightPanel QComboBox::drop-down {
 }
 QFrame#SpinEditorBox {
     background: #ffffff;
-    border: 1px solid #cfd8e5;
+    border: 1px solid #d4dfeb;
     border-radius: 9px;
 }
 QFrame#SpinEditorBox:disabled {
@@ -1282,8 +1501,8 @@ QToolButton#SpinArrowButton:hover {
 }
 QPushButton {
     background: #ffffff;
-    border: 1px solid #c8d3e2;
-    border-radius: 6px;
+    border: 1px solid #d3deea;
+    border-radius: 8px;
     padding: 7px 12px;
     color: #2b3a50;
     font-weight: 500;
@@ -1297,11 +1516,11 @@ QPushButton:pressed {
 }
 QPushButton:disabled {
     color: #a7b1bf;
-    background: #f0f3f7;
+    background: #ffffff;
     border-color: #d7deea;
 }
 QPushButton#PrimaryButton {
-    background: #1879d9;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2588e2, stop:1 #1879d9);
     border-color: #1879d9;
     color: #ffffff;
     font-weight: 700;
@@ -1310,45 +1529,67 @@ QPushButton#PrimaryButton:hover {
     background: #0d6fcf;
     border-color: #0d6fcf;
 }
-QPushButton#WaveChoice {
-    min-height: 32px;
-    padding: 3px 6px;
-    font-size: 11px;
-    font-weight: 500;
-}
-QPushButton#WaveChoice:checked {
-    background: #1879d9;
+QPushButton#ConnectionButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2588e2, stop:1 #1879d9);
     border-color: #1879d9;
     color: #ffffff;
     font-weight: 700;
 }
-QLabel#SummaryLine {
+QPushButton#ConnectionButton:hover {
+    background: #0d6fcf;
+    border-color: #0d6fcf;
+}
+QPushButton#ConnectionButton[connected="true"] {
+    background: #ffffff;
+    border-color: #9fc6eb;
+    color: #1e6fbf;
+}
+QPushButton#OutputToggleButton[on="true"] {
+    background: #e8f6ee;
+    border-color: #bfe5cf;
+    color: #2e9f61;
+    font-weight: 700;
+}
+QPushButton#WaveChoice {
+    min-height: 68px;
+    padding: 5px 6px;
+    font-size: 13px;
+    font-weight: 500;
+}
+QPushButton#WaveChoice:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2588e2, stop:1 #1879d9);
+    border-color: #1879d9;
+    color: #ffffff;
+    font-weight: 700;
+}
+QLabel#SummaryTitle {
+    color: #40546a;
+    font-size: 12px;
+    font-weight: 700;
     background: transparent;
-    border: none;
-    padding: 3px 0;
-    color: #22354c;
+}
+QLabel#SummaryLine {
+    color: #40546a;
+    font-size: 12px;
+    background: transparent;
+}
+QLabel#SummaryLineStrong {
+    color: #1879d9;
+    font-size: 12px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#AdvancedNote {
+    background: #f6fbff;
+    border: 1px solid #d8e0ea;
+    border-radius: 8px;
+    color: #607387;
+    font-size: 12px;
+    padding-left: 12px;
 }
 QFrame#InlineDetails {
     background: transparent;
     border: none;
-}
-QLabel#ConnStatus {
-    border-radius: 8px;
-    padding: 0 10px;
-    font-weight: 700;
-    background: #edf1f6;
-    color: #8a95a5;
-    border: 1px solid #d9e1eb;
-}
-QLabel#ConnStatus[connected="true"] {
-    background: #e8f6ee;
-    color: #2e9f61;
-    border-color: #bfe5cf;
-}
-QLabel#ConnStatus[failed="true"] {
-    background: #fde8e8;
-    color: #c94141;
-    border-color: #f5b5b5;
 }
 QTextEdit#LogText {
     background: #ffffff;

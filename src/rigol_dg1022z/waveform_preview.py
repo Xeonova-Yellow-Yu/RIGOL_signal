@@ -10,6 +10,17 @@ from PySide6.QtWidgets import QWidget
 from .scpi import normalize_waveform
 
 
+WAVEFORM_TITLES = {
+    "SIN": "Sine",
+    "SQU": "Square",
+    "PULS": "Pulse",
+    "RAMP": "Ramp",
+    "NOIS": "Noise",
+    "USER": "Arb",
+    "DC": "DC",
+}
+
+
 @dataclass(frozen=True)
 class WaveformPreviewState:
     waveform: str
@@ -42,14 +53,18 @@ class WaveformPreview(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect().adjusted(1, 1, -1, -1)
-        painter.fillRect(rect, QColor("#fbfdff"))
 
-        panel = QRectF(rect).adjusted(14, 16, -14, -14)
+        panel = QRectF(rect)
         painter.setPen(QPen(QColor("#d8e2ee"), 1))
         painter.setBrush(QColor("#ffffff"))
-        painter.drawRoundedRect(panel, 10, 10)
+        painter.drawRoundedRect(panel, 8, 8)
 
-        plot = panel.adjusted(14, 34, -14, -36)
+        plot = QRectF(
+            panel.left() + 24,
+            panel.top() + 62,
+            panel.width() - 48,
+            max(96.0, panel.height() - 126),
+        )
         self._draw_grid(painter, plot)
         self._draw_wave(painter, plot)
         self._draw_labels(painter, panel)
@@ -88,7 +103,7 @@ class WaveformPreview(QWidget):
             else:
                 path.lineTo(x, y)
 
-        painter.setPen(QPen(QColor("#1879d9"), 2.2))
+        painter.setPen(QPen(QColor("#1879d9"), 3.0))
         painter.drawPath(path)
 
         painter.setPen(QPen(QColor("#8bbff0"), 1, Qt.DashLine))
@@ -141,17 +156,21 @@ class WaveformPreview(QWidget):
     def _draw_labels(self, painter: QPainter, panel: QRectF) -> None:
         waveform = normalize_waveform(self._state.waveform)
         title_font = QFont(painter.font())
-        title_font.setPointSize(13)
+        title_font.setPointSize(22)
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(QColor("#0f2f4d"))
-        painter.drawText(panel.adjusted(14, 8, -14, -8), Qt.AlignTop | Qt.AlignLeft, waveform)
+        painter.drawText(
+            panel.adjusted(24, 14, -24, -14),
+            Qt.AlignTop | Qt.AlignLeft,
+            WAVEFORM_TITLES.get(waveform, waveform),
+        )
 
         tag_font = QFont(painter.font())
-        tag_font.setPointSize(8)
+        tag_font.setPointSize(13)
         tag_font.setBold(False)
         painter.setFont(tag_font)
-        painter.setPen(QColor("#536478"))
+        painter.setPen(QColor("#40546a"))
         detail = "  |  ".join(
             (
                 self._state.frequency_text,
@@ -160,4 +179,5 @@ class WaveformPreview(QWidget):
                 self._state.output_text,
             )
         )
-        painter.drawText(panel.adjusted(14, 0, -14, -10), Qt.AlignBottom | Qt.AlignLeft, detail)
+        detail_rect = QRectF(panel.left() + 24, panel.bottom() - 48, panel.width() - 48, 28)
+        painter.drawText(detail_rect, Qt.AlignVCenter | Qt.AlignLeft, detail)

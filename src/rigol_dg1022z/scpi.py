@@ -41,21 +41,12 @@ COMMON_WAVEFORMS = [
 
 
 WAVEFORM_CHOICES = [
-    ("正弦波  SIN", "SIN"),
-    ("方波  SQU", "SQU"),
-    ("脉冲  PULS", "PULS"),
-    ("斜波/三角波  RAMP", "RAMP"),
-    ("噪声  NOIS", "NOIS"),
-    ("直流  DC", "DC"),
-    ("用户任意波  USER", "USER"),
-    ("Sinc  SINC", "SINC"),
-    ("指数上升  EXP_RISE", "EXP_RISE"),
-    ("指数下降  EXP_FALL", "EXP_FALL"),
-    ("心电  CARDIAC", "CARDIAC"),
-    ("高斯  GAUSS", "GAUSS"),
-    ("半正矢  HAVERSINE", "HAVERSINE"),
-    ("洛伦兹  LORENTZ", "LORENTZ"),
-    ("双音  DUALTONE", "DUALTONE"),
+    ("Sine\n正弦", "SIN"),
+    ("Square\n方波", "SQU"),
+    ("Ramp\n斜波", "RAMP"),
+    ("Pulse\n脉冲", "PULS"),
+    ("Noise\n噪声", "NOIS"),
+    ("Arb\n任意波", "USER"),
 ]
 
 

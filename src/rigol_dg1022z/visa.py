@@ -103,6 +103,7 @@ class RigolVisaClient:
 
     def apply_channel(self, settings: ChannelSettings) -> list[str]:
         commands = build_channel_apply_commands(settings)
+        self._log(f"SCPI 下发 CH{settings.channel}: {len(commands)} 条")
         self.write_many(commands)
         return commands
 
