@@ -20,7 +20,8 @@ Thumbs.db
 .idea/
 .vscode/
 
-# draw.io temporary / backup
+# draw.io (local design only)
+*.drawio
 .$*
 *.drawio.bkp
 *.bkp
