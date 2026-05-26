@@ -15,8 +15,10 @@ DEFAULT_VISA_ADDRESS = "TCPIP::192.168.1.191::INSTR"
 
 @dataclass(frozen=True)
 class ChannelUiConfig:
-    frequency_unit: str = "kHz"
-    period_unit: str = "ms"
+    """Per-channel UI state; empty unit strings mean use preferred defaults on first load."""
+
+    frequency_unit: str = ""
+    period_unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -233,8 +235,8 @@ def _channel_ui_from_dict(data: Any) -> dict[int, ChannelUiConfig]:
         frequency_unit = saved.get("frequency_unit", result[channel].frequency_unit)
         period_unit = saved.get("period_unit", result[channel].period_unit)
         result[channel] = ChannelUiConfig(
-            frequency_unit=frequency_unit if frequency_unit in {"Hz", "kHz", "MHz"} else "kHz",
-            period_unit=period_unit if period_unit in {"ms", "s"} else "ms",
+            frequency_unit=frequency_unit if frequency_unit in {"Hz", "kHz", "MHz", ""} else "",
+            period_unit=period_unit if period_unit in {"ms", "s", ""} else "",
         )
     return result
 

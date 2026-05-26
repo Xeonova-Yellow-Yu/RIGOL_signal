@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListView,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -43,6 +44,7 @@ from .config import (
     load_app_config,
     save_app_config,
 )
+from .display_units import preferred_frequency_unit, preferred_period_unit
 from .domain import BurstSettings, ChannelSettings
 from .scpi import WAVEFORM_CHOICES
 from .ui_state import (
@@ -55,6 +57,131 @@ from .visa import RigolVisaClient
 from .waveform_preview import WaveformPreview, WaveformPreviewState
 
 
+COMBO_POPUP_STYLE = """
+QListView#ComboPopupView {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+    color: #22354c;
+}
+QListView#ComboPopupView::item {
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: transparent;
+}
+QListView#ComboPopupView::item:hover,
+QListView#ComboPopupView::item:selected {
+    background: #e9f4ff;
+    color: #0f2f4d;
+}
+"""
+
+CONNECTION_CONTENT_WIDTH = 430
+CONNECTION_ROW_HEIGHT = 58
+CONNECTION_ADDRESS_WIDTH = 220
+UNIT_SLOT_WIDTH = 62
+UNIT_SEP_WIDTH = 1
+UNIT_COLUMN_WIDTH = UNIT_SEP_WIDTH + UNIT_SLOT_WIDTH
+UNIT_SLOT_PAD_LEFT = 10
+UNIT_SLOT_PAD_RIGHT = 14
+VALID_FREQUENCY_UNITS = frozenset({"Hz", "kHz", "MHz"})
+VALID_PERIOD_UNITS = frozenset({"ms", "s"})
+
+
+class CleanComboBox(QComboBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._popup: QFrame | None = None
+        self.setMaxVisibleItems(12)
+        self._prepare_popup()
+
+    def showPopup(self) -> None:
+        self.hidePopup()
+        if self.count() <= 0:
+            return
+
+        popup = QFrame(None, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup.setObjectName("ComboPopupFrame")
+        popup.setAttribute(Qt.WA_StyledBackground, True)
+        popup.setAttribute(Qt.WA_TranslucentBackground, False)
+        popup.setStyleSheet(APP_STYLE)
+
+        outer = QVBoxLayout(popup)
+        outer.setContentsMargins(3, 3, 3, 3)
+        outer.setSpacing(0)
+
+        row_height = 32
+        visible_rows = min(max(1, self.count()), self.maxVisibleItems())
+        item_host = QFrame(popup)
+        item_host.setObjectName("ComboPopupItems")
+        item_layout = QVBoxLayout(item_host)
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        item_layout.setSpacing(0)
+        content_width = self.width()
+        for index in range(self.count()):
+            item = QPushButton(self.itemText(index), item_host)
+            item.setObjectName("ComboPopupItem")
+            item.setFixedHeight(row_height)
+            item.setCursor(Qt.PointingHandCursor)
+            item.setProperty("selected", index == self.currentIndex())
+            item.clicked.connect(lambda _checked=False, row=index: self._select_popup_index(row))
+            item_layout.addWidget(item)
+            content_width = max(content_width, item.sizeHint().width() + 18)
+        item_host.setFixedHeight(self.count() * row_height)
+
+        if self.count() > visible_rows:
+            scroller = QScrollArea(popup)
+            scroller.setObjectName("ComboPopupScroll")
+            scroller.setFrameShape(QFrame.NoFrame)
+            scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroller.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroller.setWidgetResizable(True)
+            scroller.setWidget(item_host)
+            outer.addWidget(scroller)
+        else:
+            outer.addWidget(item_host)
+
+        height = visible_rows * row_height + 6
+        popup.setFixedSize(max(self.width(), content_width, 120), height)
+        popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        self._popup = popup
+        popup.show()
+
+    def hidePopup(self) -> None:
+        if self._popup is not None:
+            popup = self._popup
+            self._popup = None
+            popup.close()
+            popup.deleteLater()
+
+    def _select_popup_index(self, index: int) -> None:
+        if 0 <= index < self.count():
+            self.setCurrentIndex(index)
+        self.hidePopup()
+
+    def _prepare_popup(self) -> QListView:
+        view = self.view()
+        if not isinstance(view, QListView) or view.objectName() != "ComboPopupView":
+            view = QListView(self)
+            view.setObjectName("ComboPopupView")
+            self.setView(view)
+        view.setObjectName("ComboPopupView")
+        view.setFrameShape(QFrame.NoFrame)
+        view.setLineWidth(0)
+        view.setMidLineWidth(0)
+        view.setMouseTracking(True)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        view.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        view.setAttribute(Qt.WA_StyledBackground, True)
+        view.setAttribute(Qt.WA_TranslucentBackground, False)
+        view.setStyleSheet(COMBO_POPUP_STYLE)
+        return view
+
+
 class ChannelCard(QFrame):
     selected = Signal(int)
 
@@ -63,9 +190,9 @@ class ChannelCard(QFrame):
         self.channel = channel
         self.setObjectName("ChannelCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(42)
-        self.setMinimumWidth(150)
-        self.setMaximumWidth(220)
+        self.setFixedHeight(40)
+        self.setMinimumWidth(120)
+        self.setMaximumWidth(16777215)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
@@ -259,7 +386,11 @@ class MainWindow(QMainWindow):
         for address in addresses:
             self._add_connection_row(address)
 
-        actions = QHBoxLayout()
+        actions_frame = QFrame(card)
+        actions_frame.setObjectName("ConnectionActionsRow")
+        actions_frame.setFixedWidth(CONNECTION_CONTENT_WIDTH)
+        actions = QHBoxLayout(actions_frame)
+        actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(8)
         self.btn_remove_address = QPushButton("删除地址", card)
         self.btn_remove_address.setObjectName("SecondaryButton")
@@ -274,7 +405,7 @@ class MainWindow(QMainWindow):
         actions.addStretch(1)
         actions.addWidget(self.btn_add_address)
         actions.addWidget(self.btn_refresh)
-        card_layout.addLayout(actions)
+        card_layout.addWidget(actions_frame, 0, Qt.AlignLeft)
         self._update_remove_address_state()
 
         device_list_title = QLabel("已连接信号发生器", card)
@@ -294,14 +425,15 @@ class MainWindow(QMainWindow):
     def _add_connection_row(self, address: str = "") -> dict[str, QWidget]:
         row_frame = QFrame(self.connection_panel)
         row_frame.setObjectName("ConnectionDeviceRow")
-        row_frame.setFixedSize(430, 58)
+        row_frame.setFixedSize(CONNECTION_CONTENT_WIDTH, CONNECTION_ROW_HEIGHT)
         row = QHBoxLayout(row_frame)
         row.setContentsMargins(8, 7, 8, 7)
         row.setSpacing(8)
 
-        address_box = QComboBox(row_frame)
+        address_box = CleanComboBox(row_frame)
         address_box.setEditable(True)
-        address_box.setFixedSize(230, 36)
+        address_box.setFixedSize(CONNECTION_ADDRESS_WIDTH, 36)
+        _prepare_combo_popup(address_box)
         if address_box.lineEdit() is not None:
             address_box.lineEdit().setPlaceholderText("输入 VISA 地址")
         self._populate_address_combo(address_box, address)
@@ -349,7 +481,7 @@ class MainWindow(QMainWindow):
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._set_active_connection_row(r))
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._update_connection_row_action(r))
         connect_button.clicked.connect(lambda _checked=False, r=row_data: self._toggle_connection(r))
-        self.connection_rows_layout.addWidget(row_frame)
+        self.connection_rows_layout.addWidget(row_frame, 0, Qt.AlignLeft)
         self._set_connection_row_state(row_data, False, "未连接")
         self._update_remove_address_state()
         return row_data
@@ -541,7 +673,7 @@ class MainWindow(QMainWindow):
         panel.setObjectName("CenterPanel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(24, 22, 24, 24)
-        layout.setSpacing(22)
+        layout.setSpacing(16)
 
         title = QLabel("波形工作区")
         title.setObjectName("MainTitle")
@@ -549,62 +681,55 @@ class MainWindow(QMainWindow):
         title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(title)
 
-        control_row = QWidget(panel)
-        control_row.setObjectName("WorkControlRow")
-        control_row.setFixedHeight(132)
-        control_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        control_row_layout = QHBoxLayout(control_row)
-        control_row_layout.setContentsMargins(0, 0, 0, 0)
-        control_row_layout.setSpacing(20)
+        toolbar = QFrame(panel)
+        toolbar.setObjectName("WorkToolbar")
+        toolbar.setMinimumHeight(96)
+        toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(14, 10, 14, 10)
+        toolbar_layout.setSpacing(12)
 
-        controls = QFrame(control_row)
-        controls.setObjectName("ChannelActionStrip")
-        controls.setFixedHeight(128)
-        controls.setMinimumWidth(620)
-        controls.setMaximumWidth(760)
-        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(16, 10, 18, 16)
-        controls_layout.setSpacing(8)
+        left = QWidget(toolbar)
+        left.setObjectName("WorkToolbarLeft")
+        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
 
-        channel_area = QWidget(controls)
+        channel_area = QWidget(left)
         channel_area.setObjectName("StripRow")
-        channel_area.setFixedHeight(42)
+        channel_area.setFixedHeight(40)
         channel_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         channel_layout = QHBoxLayout(channel_area)
         channel_layout.setContentsMargins(0, 0, 0, 0)
         channel_layout.setSpacing(8)
         channel_label = QLabel("通道", channel_area)
         channel_label.setObjectName("StripRowLabel")
-        channel_label.setFixedWidth(34)
+        channel_label.setFixedWidth(36)
         channel_layout.addWidget(channel_label, 0, Qt.AlignVCenter)
         self.channel_cards = {
-            1: ChannelCard(1, controls),
-            2: ChannelCard(2, controls),
+            1: ChannelCard(1, left),
+            2: ChannelCard(2, left),
         }
         for card in self.channel_cards.values():
             channel_layout.addWidget(card, 1)
-        channel_layout.addStretch(1)
 
-        actions = QFrame(controls)
+        actions = QFrame(left)
         actions.setObjectName("ActionGrid")
-        actions.setFixedHeight(42)
+        actions.setFixedHeight(40)
         actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(0, 0, 0, 0)
         actions_layout.setSpacing(10)
         action_label = QLabel("操作", actions)
         action_label.setObjectName("StripRowLabel")
-        action_label.setFixedWidth(34)
+        action_label.setFixedWidth(36)
         self.btn_apply = QPushButton("应用当前通道", actions)
         self.btn_apply.setObjectName("PrimaryButton")
         self.btn_apply_all = QPushButton("应用双通道", actions)
         self.btn_output_toggle = QPushButton("输出 OFF", actions)
         self.btn_output_toggle.setObjectName("OutputToggleButton")
         self.btn_fire = QPushButton("软件触发 Burst", actions)
-        self.load = QComboBox(actions)
-        self.load.addItem("负载 High-Z", "INF")
-        self.load.addItem("负载 50 ohm", "50")
         for button in (
             self.btn_apply,
             self.btn_apply_all,
@@ -621,49 +746,48 @@ class MainWindow(QMainWindow):
         self.btn_output_toggle.setMaximumWidth(96)
         self.btn_fire.setMinimumWidth(104)
         self.btn_fire.setMaximumWidth(126)
-        self.load.setFixedHeight(36)
-        self.load.setMinimumWidth(112)
-        self.load.setMaximumWidth(130)
-        self.load.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         actions_layout.addWidget(action_label, 0, Qt.AlignVCenter)
         actions_layout.addWidget(self.btn_apply)
         actions_layout.addWidget(self.btn_apply_all)
         actions_layout.addWidget(self.btn_output_toggle)
         actions_layout.addWidget(self.btn_fire)
-        actions_layout.addWidget(self.load)
-        actions_layout.addStretch(1)
 
-        controls_layout.addWidget(channel_area)
-        controls_layout.addWidget(actions)
+        left_layout.addWidget(channel_area)
+        left_layout.addWidget(actions)
 
-        summary = QFrame(control_row)
-        summary.setObjectName("ChannelSummaryCard")
-        summary.setFixedHeight(118)
-        summary.setMinimumWidth(208)
-        summary.setMaximumWidth(284)
-        summary.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        divider = QFrame(toolbar)
+        divider.setObjectName("ToolbarDivider")
+        divider.setFixedWidth(1)
+        divider.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+
+        summary = QWidget(toolbar)
+        summary.setObjectName("WorkToolbarSummary")
+        summary.setFixedWidth(240)
+        summary.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         summary_layout = QVBoxLayout(summary)
-        summary_layout.setContentsMargins(14, 12, 14, 12)
+        summary_layout.setContentsMargins(4, 0, 0, 0)
         summary_layout.setSpacing(3)
         summary_title = QLabel("当前通道摘要", summary)
         summary_title.setObjectName("SummaryTitle")
         self.channel_summary_active = QLabel(summary)
         self.channel_summary_active.setObjectName("SummaryLineStrong")
+        self.channel_summary_active.setWordWrap(True)
         self.channel_summary_detail = QLabel(summary)
         self.channel_summary_detail.setObjectName("SummaryLine")
+        self.channel_summary_detail.setWordWrap(True)
         self.channel_summary_state = QLabel(summary)
         self.channel_summary_state.setObjectName("SummaryLine")
+        self.channel_summary_state.setWordWrap(True)
         summary_layout.addWidget(summary_title)
-        summary_layout.addSpacing(6)
+        summary_layout.addSpacing(4)
         summary_layout.addWidget(self.channel_summary_active)
         summary_layout.addWidget(self.channel_summary_detail)
         summary_layout.addWidget(self.channel_summary_state)
-        summary_layout.addStretch(1)
 
-        control_row_layout.addWidget(controls, 760, Qt.AlignTop)
-        control_row_layout.addWidget(summary, 284, Qt.AlignTop)
-        control_row_layout.addStretch(1)
-        layout.addWidget(control_row)
+        toolbar_layout.addWidget(left, 1)
+        toolbar_layout.addWidget(divider)
+        toolbar_layout.addWidget(summary)
+        layout.addWidget(toolbar)
 
         self.wave_preview = WaveformPreview(panel)
         self.wave_preview.setFixedHeight(258)
@@ -713,12 +837,12 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         self.right_panel = panel
         panel.setObjectName("RightPanel")
-        panel.setMinimumWidth(360)
-        panel.setMaximumWidth(440)
+        panel.setMinimumWidth(390)
+        panel.setMaximumWidth(480)
         panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(26, 16, 26, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 18, 28, 18)
+        layout.setSpacing(14)
 
         title = QLabel("参数设置")
         title.setObjectName("PanelTitle")
@@ -736,35 +860,35 @@ class MainWindow(QMainWindow):
         scroll_body.setObjectName("ParameterScrollBody")
         parameter_layout = QVBoxLayout(scroll_body)
         parameter_layout.setContentsMargins(0, 0, 2, 0)
-        parameter_layout.setSpacing(10)
+        parameter_layout.setSpacing(14)
         scroll.setWidget(scroll_body)
         layout.addWidget(scroll, 1)
 
         self.timing_group = QGroupBox()
         timing_form = _form_layout(self.timing_group)
         timing_form.addRow(_section_title("频率 / 周期"))
-        self.frequency_mode = QComboBox()
+        self.frequency_mode = CleanComboBox()
         self.frequency_mode.addItem("频率", "frequency")
         self.frequency_mode.addItem("周期", "period")
-        self.frequency_unit = QComboBox()
+        self.frequency_unit = CleanComboBox()
         self.frequency_unit.setObjectName("UnitCombo")
         self.frequency_unit.addItem("Hz", "Hz")
         self.frequency_unit.addItem("kHz", "kHz")
         self.frequency_unit.addItem("MHz", "MHz")
-        self.frequency_unit.setFixedWidth(62)
-        self.period_unit = QComboBox()
+        self.frequency_unit.setFixedWidth(UNIT_SLOT_WIDTH)
+        self.period_unit = CleanComboBox()
         self.period_unit.setObjectName("UnitCombo")
         self.period_unit.addItem("ms", "ms")
         self.period_unit.addItem("s", "s")
-        self.period_unit.setFixedWidth(54)
+        self.period_unit.setFixedWidth(UNIT_SLOT_WIDTH)
         self._frequency_display_unit = "kHz"
         self._period_display_unit = "ms"
-        self.frequency_hz = _double_spin(1e-9, 25_000.0, 1.0, 6, "", 0.1)
-        self.period_s = _double_spin(0.00004, 1_000_000_000.0, 1.0, 6, "", 0.1)
-        self.phase_deg = _double_spin(0.0, 360.0, 0.0, 3, " deg", 1.0)
-        self.frequency_hz_editor = _spin_editor(self.frequency_hz, self.frequency_unit)
-        self.period_s_editor = _spin_editor(self.period_s, self.period_unit)
-        self.phase_deg_editor = _spin_editor(self.phase_deg)
+        self.frequency_hz = _double_spin(1e-9, 25_000.0, 1.0, 6, 0.1)
+        self.period_s = _double_spin(0.00004, 1_000_000_000.0, 1.0, 6, 0.1)
+        self.phase_deg = _double_spin(0.0, 360.0, 0.0, 3, 1.0)
+        self.frequency_hz_editor = _spin_editor(self.frequency_hz, unit=self.frequency_unit)
+        self.period_s_editor = _spin_editor(self.period_s, unit=self.period_unit)
+        self.phase_deg_editor = _spin_editor(self.phase_deg, suffix="deg")
         timing_form.addRow("输入方式", self.frequency_mode)
         timing_form.addRow("频率", self.frequency_hz_editor)
         timing_form.addRow("周期", self.period_s_editor)
@@ -774,18 +898,23 @@ class MainWindow(QMainWindow):
         self.level_group = QGroupBox()
         level_form = _form_layout(self.level_group)
         level_form.addRow(_section_title("电平"))
-        self.level_mode = QComboBox()
+        self.level_mode = CleanComboBox()
         self.level_mode.addItem("幅度 + 偏置", "amplitude_offset")
         self.level_mode.addItem("高电平 + 低电平", "high_low")
-        self.amplitude_vpp = _double_spin(0.001, 20.0, 2.0, 4, " Vpp", 0.1)
-        self.offset_v = _double_spin(-10.0, 10.0, 0.0, 4, " V", 0.1)
-        self.high_v = _double_spin(-10.0, 10.0, 1.0, 4, " V", 0.1)
-        self.low_v = _double_spin(-10.0, 10.0, -1.0, 4, " V", 0.1)
-        self.amplitude_vpp_editor = _spin_editor(self.amplitude_vpp)
-        self.offset_v_editor = _spin_editor(self.offset_v)
-        self.high_v_editor = _spin_editor(self.high_v)
-        self.low_v_editor = _spin_editor(self.low_v)
+        self.load = CleanComboBox(self.level_group)
+        self.load.addItem("负载 High-Z", "INF")
+        self.load.addItem("负载 50 ohm", "50")
+        self.load.setFixedHeight(34)
+        self.amplitude_vpp = _double_spin(0.001, 20.0, 2.0, 4, 0.1)
+        self.offset_v = _double_spin(-10.0, 10.0, 0.0, 4, 0.1)
+        self.high_v = _double_spin(-10.0, 10.0, 1.0, 4, 0.1)
+        self.low_v = _double_spin(-10.0, 10.0, -1.0, 4, 0.1)
+        self.amplitude_vpp_editor = _spin_editor(self.amplitude_vpp, suffix="Vpp")
+        self.offset_v_editor = _spin_editor(self.offset_v, suffix="V")
+        self.high_v_editor = _spin_editor(self.high_v, suffix="V")
+        self.low_v_editor = _spin_editor(self.low_v, suffix="V")
         level_form.addRow("模式", self.level_mode)
+        level_form.addRow("负载", self.load)
         level_form.addRow("幅度", self.amplitude_vpp_editor)
         level_form.addRow("偏置", self.offset_v_editor)
         level_form.addRow("高电平", self.high_v_editor)
@@ -795,12 +924,12 @@ class MainWindow(QMainWindow):
         self.shape_group = QGroupBox()
         shape_form = _form_layout(self.shape_group)
         shape_form.addRow(_section_title("波形专属参数"))
-        self.duty_percent = _double_spin(0.001, 99.999, 50.0, 3, " %", 1.0)
-        self.pulse_width_s = _double_spin(16e-9, 999_999.0, 0.0001, 9, " s", 0.00001)
-        self.ramp_symmetry = _double_spin(0.0, 100.0, 50.0, 3, " %", 1.0)
-        self.duty_percent_editor = _spin_editor(self.duty_percent)
-        self.pulse_width_s_editor = _spin_editor(self.pulse_width_s)
-        self.ramp_symmetry_editor = _spin_editor(self.ramp_symmetry)
+        self.duty_percent = _double_spin(0.001, 99.999, 50.0, 3, 1.0)
+        self.pulse_width_s = _double_spin(16e-9, 999_999.0, 0.0001, 9, 0.00001)
+        self.ramp_symmetry = _double_spin(0.0, 100.0, 50.0, 3, 1.0)
+        self.duty_percent_editor = _spin_editor(self.duty_percent, inline_suffix=" %")
+        self.pulse_width_s_editor = _spin_editor(self.pulse_width_s, suffix="s")
+        self.ramp_symmetry_editor = _spin_editor(self.ramp_symmetry, inline_suffix=" %")
         shape_form.addRow("占空比", self.duty_percent_editor)
         shape_form.addRow("脉宽", self.pulse_width_s_editor)
         shape_form.addRow("斜波对称", self.ramp_symmetry_editor)
@@ -822,33 +951,33 @@ class MainWindow(QMainWindow):
         burst_head.addStretch(1)
         burst_head.addWidget(self.burst_status)
         burst_layout.addLayout(burst_head)
-        self.burst_mode = QComboBox()
+        self.burst_mode = CleanComboBox()
         self.burst_mode.addItem("N 周期", "TRIG")
         self.burst_mode.addItem("无限", "INF")
         self.burst_mode.addItem("门控", "GAT")
         self.burst_details = QFrame()
         self.burst_details.setObjectName("InlineDetails")
         burst_details_form = _form_layout(self.burst_details)
-        self.burst_trigger_source = QComboBox()
+        self.burst_trigger_source = CleanComboBox()
         self.burst_trigger_source.addItem("手动/软件", "MAN")
         self.burst_trigger_source.addItem("内部", "INT")
         self.burst_trigger_source.addItem("外部", "EXT")
         self.burst_cycles = QSpinBox()
         self.burst_cycles.setRange(1, 1_000_000)
         self.burst_cycles.setValue(1)
-        self.burst_internal_period = _double_spin(1e-6, 1e6, 0.01, 6, " s", 0.001)
-        self.burst_phase = _double_spin(0.0, 360.0, 0.0, 3, " deg", 1.0)
-        self.burst_delay = _double_spin(0.0, 1e6, 0.0, 6, " s", 0.001)
-        self.burst_gate_polarity = QComboBox()
+        self.burst_internal_period = _double_spin(1e-6, 1e6, 0.01, 6, 0.001)
+        self.burst_phase = _double_spin(0.0, 360.0, 0.0, 3, 1.0)
+        self.burst_delay = _double_spin(0.0, 1e6, 0.0, 6, 0.001)
+        self.burst_gate_polarity = CleanComboBox()
         self.burst_gate_polarity.addItem("正门控", "NORM")
         self.burst_gate_polarity.addItem("反门控", "INV")
-        self.burst_trigger_slope = QComboBox()
+        self.burst_trigger_slope = CleanComboBox()
         self.burst_trigger_slope.addItem("上升沿", "POS")
         self.burst_trigger_slope.addItem("下降沿", "NEG")
         self.burst_cycles_editor = _spin_editor(self.burst_cycles)
-        self.burst_internal_period_editor = _spin_editor(self.burst_internal_period)
-        self.burst_phase_editor = _spin_editor(self.burst_phase)
-        self.burst_delay_editor = _spin_editor(self.burst_delay)
+        self.burst_internal_period_editor = _spin_editor(self.burst_internal_period, suffix="s")
+        self.burst_phase_editor = _spin_editor(self.burst_phase, suffix="deg")
+        self.burst_delay_editor = _spin_editor(self.burst_delay, suffix="s")
         burst_details_form.addRow("类型", self.burst_mode)
         burst_details_form.addRow("触发源", self.burst_trigger_source)
         burst_details_form.addRow("周期数", self.burst_cycles_editor)
@@ -1018,12 +1147,15 @@ class MainWindow(QMainWindow):
         if not self.clients:
             empty = QLabel("暂无已连接信号发生器，请在上方输入或刷新 VISA 地址后连接。")
             empty.setObjectName("EmptyState")
-            self.device_list_layout.addWidget(empty)
+            empty.setFixedWidth(CONNECTION_CONTENT_WIDTH)
+            empty.setWordWrap(True)
+            self.device_list_layout.addWidget(empty, 0, Qt.AlignLeft)
             return
 
         for address in self.clients:
             card = QFrame()
             card.setObjectName("DeviceListCard")
+            card.setFixedWidth(CONNECTION_CONTENT_WIDTH)
             card.setFixedHeight(74)
             card_layout = QHBoxLayout(card)
             card_layout.setContentsMargins(14, 10, 14, 10)
@@ -1052,7 +1184,7 @@ class MainWindow(QMainWindow):
             card_layout.addLayout(text, 1)
             card_layout.addWidget(state)
             card_layout.addWidget(open_btn)
-            self.device_list_layout.addWidget(card)
+            self.device_list_layout.addWidget(card, 0, Qt.AlignLeft)
 
     def _select_channel(self, channel: int) -> None:
         if channel == self.active_channel:
@@ -1117,7 +1249,10 @@ class MainWindow(QMainWindow):
         if self.active_device_key:
             self.device_settings[self.active_device_key] = dict(self.channel_settings)
             self.device_active_channels[self.active_device_key] = self.active_channel
-            channel_ui = self.device_ui_settings.setdefault(self.active_device_key, dict(self.default_channel_ui))
+            channel_ui = self.device_ui_settings.setdefault(
+                self.active_device_key,
+                dict(self.default_channel_ui),
+            )
             channel_ui[self.active_channel] = ChannelUiConfig(
                 frequency_unit=self._frequency_display_unit,
                 period_unit=self._period_display_unit,
@@ -1184,15 +1319,33 @@ class MainWindow(QMainWindow):
         self.period_s.setValue(value)
         self.period_s.blockSignals(False)
 
-    def _preferred_frequency_unit(self, frequency_hz: float) -> str:
-        if abs(frequency_hz) >= 1_000_000.0:
-            return "MHz"
-        if abs(frequency_hz) >= 1_000.0:
-            return "kHz"
-        return "Hz"
+    def _resolved_frequency_unit(self, saved: str, frequency_hz: float) -> str:
+        if saved in VALID_FREQUENCY_UNITS:
+            return saved
+        return preferred_frequency_unit(frequency_hz)
 
-    def _preferred_period_unit(self, period_s: float) -> str:
-        return "s" if abs(period_s) >= 1.0 else "ms"
+    def _resolved_period_unit(self, saved: str, period_s: float) -> str:
+        if saved in VALID_PERIOD_UNITS:
+            return saved
+        return preferred_period_unit(period_s)
+
+    def _apply_timing_display_units(self, settings: ChannelSettings) -> None:
+        ui_key = (
+            self.active_device_key
+            or self._current_visa_address()
+            or self._startup_config.visa_address
+        )
+        saved_ui = self.device_ui_settings.get(ui_key, {}).get(settings.channel)
+        saved_freq = saved_ui.frequency_unit if isinstance(saved_ui, ChannelUiConfig) else ""
+        saved_period = saved_ui.period_unit if isinstance(saved_ui, ChannelUiConfig) else ""
+        frequency_unit = self._resolved_frequency_unit(saved_freq, settings.frequency_hz)
+        period_unit = self._resolved_period_unit(saved_period, settings.period_s)
+        self._frequency_display_unit = frequency_unit
+        self._period_display_unit = period_unit
+        _set_combo_data(self.frequency_unit, frequency_unit, silent=True)
+        _set_combo_data(self.period_unit, period_unit, silent=True)
+        self._configure_frequency_spin(frequency_unit, settings.frequency_hz)
+        self._configure_period_spin(period_unit, settings.period_s)
 
     def _calculated_pulse_width_s(
         self,
@@ -1258,24 +1411,7 @@ class MainWindow(QMainWindow):
         self.active_channel = settings.channel
         self._set_waveform_button(settings.waveform)
         _set_combo_data(self.frequency_mode, settings.frequency_mode)
-        ui_key = self.active_device_key or self._current_visa_address() or self._startup_config.visa_address
-        saved_ui = self.device_ui_settings.get(ui_key, {}).get(settings.channel)
-        frequency_unit = (
-            saved_ui.frequency_unit
-            if isinstance(saved_ui, ChannelUiConfig)
-            else self._preferred_frequency_unit(settings.frequency_hz)
-        )
-        period_unit = (
-            saved_ui.period_unit
-            if isinstance(saved_ui, ChannelUiConfig)
-            else self._preferred_period_unit(settings.period_s)
-        )
-        self._frequency_display_unit = frequency_unit
-        self._period_display_unit = period_unit
-        _set_combo_data(self.frequency_unit, frequency_unit, silent=True)
-        _set_combo_data(self.period_unit, period_unit, silent=True)
-        self._configure_frequency_spin(frequency_unit, settings.frequency_hz)
-        self._configure_period_spin(period_unit, settings.period_s)
+        self._apply_timing_display_units(settings)
         self.phase_deg.setValue(settings.phase_deg)
         _set_combo_data(self.level_mode, settings.level_mode)
         self.amplitude_vpp.setValue(settings.amplitude_vpp)
@@ -1641,15 +1777,17 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLE)
+        for combo in self.findChildren(QComboBox):
+            _prepare_combo_popup(combo)
 
 
 def _form_layout(parent: QWidget) -> QFormLayout:
     layout = QFormLayout(parent)
     layout.setLabelAlignment(Qt.AlignRight)
     layout.setFormAlignment(Qt.AlignTop)
-    layout.setHorizontalSpacing(8)
-    layout.setVerticalSpacing(5)
-    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setHorizontalSpacing(10)
+    layout.setVerticalSpacing(8)
+    layout.setContentsMargins(12, 10, 12, 10)
     return layout
 
 
@@ -1659,12 +1797,30 @@ def _section_title(text: str) -> QLabel:
     return label
 
 
+def _prepare_combo_popup(combo: QComboBox) -> None:
+    if isinstance(combo, CleanComboBox):
+        combo._prepare_popup()
+        return
+    view = combo.view()
+    if not isinstance(view, QListView) or view.objectName() != "ComboPopupView":
+        view = QListView(combo)
+        view.setObjectName("ComboPopupView")
+        combo.setView(view)
+    view.setFrameShape(QFrame.NoFrame)
+    view.setLineWidth(0)
+    view.setMidLineWidth(0)
+    view.setMouseTracking(True)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    view.setWindowFlag(Qt.FramelessWindowHint, True)
+    view.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+
+
 def _double_spin(
     minimum: float,
     maximum: float,
     value: float,
     decimals: int,
-    suffix: str,
     step: float,
 ) -> QDoubleSpinBox:
     spin = QDoubleSpinBox()
@@ -1673,7 +1829,6 @@ def _double_spin(
     spin.setDecimals(decimals)
     spin.setValue(value)
     spin.setSingleStep(step)
-    spin.setSuffix(suffix)
     spin.setKeyboardTracking(False)
     spin.setAccelerated(True)
     spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
@@ -1681,38 +1836,108 @@ def _double_spin(
     return spin
 
 
-def _spin_editor(spin: QDoubleSpinBox | QSpinBox, unit: QComboBox | None = None) -> QWidget:
+def _clear_widget_background(widget: QWidget) -> None:
+    widget.setAttribute(Qt.WA_StyledBackground, True)
+    widget.setAutoFillBackground(False)
+
+
+def _unit_column_spacer(parent: QWidget) -> QWidget:
+    spacer = QWidget(parent)
+    spacer.setObjectName("UnitColumnSpacer")
+    spacer.setFixedWidth(UNIT_COLUMN_WIDTH)
+    _clear_widget_background(spacer)
+    return spacer
+
+
+def _unit_column_widget(
+    parent: QWidget,
+    *,
+    unit: QComboBox | None = None,
+    suffix: str = "",
+) -> QWidget:
+    column = QWidget(parent)
+    column.setObjectName("UnitColumn")
+    column.setFixedWidth(UNIT_COLUMN_WIDTH)
+    _clear_widget_background(column)
+
+    layout = QHBoxLayout(column)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+
+    separator = QFrame(column)
+    separator.setObjectName("UnitSeparator")
+    separator.setFrameShape(QFrame.Shape.NoFrame)
+    separator.setFixedWidth(UNIT_SEP_WIDTH)
+    _clear_widget_background(separator)
+    layout.addWidget(separator)
+
+    slot = QWidget(column)
+    slot.setObjectName("UnitSlot")
+    slot.setFixedWidth(UNIT_SLOT_WIDTH)
+    _clear_widget_background(slot)
+    slot_layout = QHBoxLayout(slot)
+    slot_layout.setContentsMargins(0, 0, 0, 0)
+    slot_layout.setSpacing(0)
+    if unit is not None:
+        unit.setParent(slot)
+        unit.setFixedWidth(UNIT_SLOT_WIDTH)
+        _clear_widget_background(unit)
+        slot_layout.addWidget(unit)
+    elif suffix.strip():
+        label = QLabel(suffix.strip(), slot)
+        label.setObjectName("UnitLabel")
+        label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        _clear_widget_background(label)
+        slot_layout.addWidget(label, 1)
+    layout.addWidget(slot)
+    return column
+
+
+def _spin_editor(
+    spin: QDoubleSpinBox | QSpinBox,
+    *,
+    unit: QComboBox | None = None,
+    suffix: str = "",
+    inline_suffix: str = "",
+) -> QWidget:
     spin.setObjectName("ArrowSpin")
     spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
     spin.setFrame(False)
     spin.setAccelerated(True)
+    if inline_suffix:
+        spin.setSuffix(inline_suffix)
+    spin.setMinimumWidth(0)
+    spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     editor = QFrame()
     editor.setObjectName("SpinEditorBox")
+    editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     layout = QHBoxLayout(editor)
-    layout.setContentsMargins(7, 2, 4, 2)
-    layout.setSpacing(2)
+    layout.setContentsMargins(8, 3, 5, 3)
+    layout.setSpacing(0)
     layout.addWidget(spin, 1)
+    if unit is not None or suffix.strip():
+        layout.addWidget(_unit_column_widget(editor, unit=unit, suffix=suffix))
+    elif inline_suffix:
+        layout.addWidget(_unit_column_spacer(editor))
 
     btn_up = QToolButton(editor)
     btn_up.setObjectName("SpinArrowButton")
     btn_up.setText("▲")
     btn_up.setToolTip("增加")
     btn_up.setAutoRaise(True)
-    btn_up.setFixedSize(21, 21)
+    btn_up.setFixedSize(22, 22)
 
     btn_down = QToolButton(editor)
     btn_down.setObjectName("SpinArrowButton")
     btn_down.setText("▼")
     btn_down.setToolTip("减少")
     btn_down.setAutoRaise(True)
-    btn_down.setFixedSize(21, 21)
+    btn_down.setFixedSize(22, 22)
 
     btn_up.clicked.connect(lambda: spin.setValue(spin.value() + spin.singleStep()))
     btn_down.clicked.connect(lambda: spin.setValue(spin.value() - spin.singleStep()))
 
-    if unit is not None:
-        layout.addWidget(unit)
     layout.addWidget(btn_up)
     layout.addWidget(btn_down)
     return editor
@@ -1958,6 +2183,10 @@ QFrame#ConnectionDeviceRow {
     border: 1px solid #dce5ef;
     border-radius: 10px;
 }
+QFrame#ConnectionActionsRow {
+    background: transparent;
+    border: none;
+}
 QFrame#ConnectionStatusBadge {
     background: #f7fafc;
     border: 1px solid #dce5ef;
@@ -1983,22 +2212,27 @@ QFrame#RightPanel {
     border: 1px solid #dce5ef;
     border-radius: 11px;
 }
-QFrame#ChannelActionStrip {
+QFrame#WorkToolbar {
     background: #ffffff;
     border: 1px solid #dce5ef;
     border-radius: 10px;
 }
-QFrame#ChannelActionStrip QWidget#StripRow {
+QWidget#WorkToolbarLeft {
+    background: transparent;
+}
+QFrame#ToolbarDivider {
+    background: #d4dfeb;
+    border: none;
+    min-width: 1px;
+    max-width: 1px;
+    margin: 2px 0;
+}
+QWidget#WorkToolbarSummary {
+    background: transparent;
+}
+QWidget#WorkToolbarLeft QWidget#StripRow {
     background: transparent;
     border: none;
-}
-QWidget#WorkControlRow {
-    background: transparent;
-}
-QFrame#ChannelSummaryCard {
-    background: #ffffff;
-    border: 1px solid #dce5ef;
-    border-radius: 10px;
 }
 QFrame#ActionGrid {
     background: transparent;
@@ -2170,18 +2404,18 @@ QGroupBox::title {
     background: transparent;
 }
 QFrame#RightPanel QLabel, QFrame#RightPanel QCheckBox {
-    font-size: 11px;
+    font-size: 12px;
 }
 QFrame#RightPanel QLabel#PanelTitle {
-    font-size: 14px;
+    font-size: 16px;
 }
 QFrame#RightPanel QGroupBox {
     background: #ffffff;
     border: 1px solid #dce5ef;
     border-radius: 10px;
     margin-top: 0;
-    padding: 0;
-    font-size: 11px;
+    padding: 2px;
+    font-size: 12px;
 }
 QFrame#RightPanel QGroupBox::title {
     height: 0;
@@ -2191,9 +2425,9 @@ QFrame#RightPanel QGroupBox::title {
 }
 QLabel#SectionTitle {
     color: #0f2f4d;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 700;
-    padding: 0 0 5px 0;
+    padding: 0 0 7px 0;
     background: transparent;
     border: none;
 }
@@ -2215,6 +2449,58 @@ QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
 QComboBox::drop-down {
     border: none;
     width: 22px;
+}
+QComboBoxPrivateContainer {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+    padding: 0;
+}
+QComboBoxPrivateContainer QWidget {
+    background: #ffffff;
+    border: none;
+}
+QFrame#ComboPopupFrame {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+}
+QFrame#ComboPopupItems, QScrollArea#ComboPopupScroll {
+    background: transparent;
+    border: none;
+}
+QPushButton#ComboPopupItem {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #22354c;
+    font-size: 12px;
+    padding: 0 10px;
+    text-align: left;
+}
+QPushButton#ComboPopupItem:hover,
+QPushButton#ComboPopupItem[selected="true"] {
+    background: #e9f4ff;
+    color: #0f2f4d;
+}
+QListView#ComboPopupView {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+    color: #22354c;
+}
+QListView#ComboPopupView::item {
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: transparent;
+}
+QListView#ComboPopupView::item:hover,
+QListView#ComboPopupView::item:selected {
+    background: #e9f4ff;
+    color: #0f2f4d;
 }
 QComboBox QAbstractItemView {
     background: #ffffff;
@@ -2255,24 +2541,61 @@ QListView::item:selected, QListView::item:hover {
     color: #0f2f4d;
 }
 QFrame#RightPanel QComboBox, QFrame#RightPanel QDoubleSpinBox, QFrame#RightPanel QSpinBox {
-    min-height: 22px;
-    padding: 1px 6px;
-    font-size: 11px;
+    min-height: 30px;
+    padding: 3px 8px;
+    font-size: 12px;
 }
 QFrame#RightPanel QComboBox::drop-down {
-    width: 18px;
+    width: 22px;
 }
-QFrame#SpinEditorBox QComboBox#UnitCombo {
+QFrame#SpinEditorBox QFrame#UnitSeparator {
+    background: #d4dfeb;
+    border: none;
+    min-width: 1px;
+    max-width: 1px;
+    margin: 5px 0;
+}
+QFrame#SpinEditorBox QWidget#UnitColumn,
+QFrame#SpinEditorBox QWidget#UnitColumnSpacer,
+QFrame#SpinEditorBox QWidget#UnitSlot {
     background: transparent;
     border: none;
-    border-left: 1px solid #d4dfeb;
-    border-radius: 0;
-    min-height: 18px;
-    padding: 1px 2px 1px 7px;
+}
+QFrame#SpinEditorBox QLabel#UnitLabel {
+    background: transparent;
     color: #536478;
+    font-size: 12px;
+    padding-left: 10px;
+    padding-right: 14px;
+    border: none;
+}
+QFrame#SpinEditorBox QComboBox#UnitCombo,
+QFrame#SpinEditorBox QComboBox#UnitCombo:focus,
+QFrame#SpinEditorBox QComboBox#UnitCombo:disabled,
+QFrame#SpinEditorBox QComboBox#UnitCombo:hover {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    min-height: 24px;
+    padding: 0 14px 0 10px;
+    color: #536478;
+}
+QFrame#RightPanel QFrame#SpinEditorBox QComboBox#UnitCombo,
+QFrame#RightPanel QFrame#SpinEditorBox QComboBox#UnitCombo:focus,
+QFrame#RightPanel QFrame#SpinEditorBox QComboBox#UnitCombo:disabled {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0 14px 0 10px;
+    min-height: 24px;
 }
 QFrame#SpinEditorBox QComboBox#UnitCombo::drop-down {
     width: 14px;
+    border: none;
+    background: transparent;
+}
+QFrame#RightPanel QFrame#SpinEditorBox QLabel#UnitLabel {
+    font-size: 12px;
 }
 QFrame#SpinEditorBox {
     background: #ffffff;
@@ -2291,9 +2614,9 @@ QDoubleSpinBox#ArrowSpin, QSpinBox#ArrowSpin {
     color: #22354c;
 }
 QFrame#RightPanel QDoubleSpinBox#ArrowSpin, QFrame#RightPanel QSpinBox#ArrowSpin {
-    min-height: 18px;
-    padding: 2px 1px;
-    font-size: 11px;
+    min-height: 24px;
+    padding: 2px 2px;
+    font-size: 12px;
 }
 QToolButton#SpinArrowButton {
     background: transparent;
@@ -2305,7 +2628,7 @@ QToolButton#SpinArrowButton {
     padding: 0;
 }
 QFrame#RightPanel QToolButton#SpinArrowButton {
-    font-size: 12px;
+    font-size: 13px;
 }
 QToolButton#SpinArrowButton:hover {
     color: #334155;

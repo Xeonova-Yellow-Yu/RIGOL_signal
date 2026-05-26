@@ -113,11 +113,42 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(first.active_channel, 1)
             self.assertEqual(first.channels[1].frequency_hz, 1111.0)
             self.assertEqual(first.channels[2].frequency_hz, 2222.0)
+            # channel_ui roundtrips in JSON; app derives units from Hz/s, not these fields.
             self.assertEqual(first.channel_ui[1].frequency_unit, "MHz")
             self.assertEqual(first.channel_ui[1].period_unit, "s")
             self.assertEqual(second.active_channel, 2)
             self.assertEqual(second.channels[1].waveform, "RAMP")
             self.assertEqual(second.channels[2].frequency_hz, 4444.0)
+
+    def test_channel_ui_ignores_invalid_unit_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad_units.json"
+            path.write_text(
+                """
+                {
+                  "version": 3,
+                  "active_channel": 1,
+                  "visa_address": "TCPIP::192.168.1.191::INSTR",
+                  "channels": {},
+                  "devices": {
+                    "TCPIP::192.168.1.191::INSTR": {
+                      "active_channel": 1,
+                      "channels": {
+                        "1": {"channel": 1, "waveform": "SIN", "frequency_hz": 1000.0}
+                      },
+                      "channel_ui": {
+                        "1": {"frequency_unit": "invalid", "period_unit": "bad"}
+                      }
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+            loaded = load_app_config(path, default_app_config())
+            ui = loaded.devices["TCPIP::192.168.1.191::INSTR"].channel_ui[1]
+            self.assertEqual(ui.frequency_unit, "")
+            self.assertEqual(ui.period_unit, "")
 
     def test_missing_or_invalid_config_uses_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
