@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 
 from rigol_dg1022z.domain import BurstSettings, ChannelSettings, ValidationError
 from rigol_dg1022z.scpi import (
+    build_burst_state_command,
     build_channel_apply_commands,
     build_fire_burst_command,
     build_output_command,
@@ -28,6 +29,7 @@ class ScpiBuilderTests(unittest.TestCase):
             high_v=3.3,
             low_v=0.0,
             duty_percent=25.0,
+            phase_deg=45.0,
             output_enabled=True,
             load="50",
             burst=BurstSettings(
@@ -44,6 +46,8 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR1:FREQ 1000", commands)
         self.assertIn(":SOUR1:VOLT:HIGH 3.3", commands)
         self.assertIn(":SOUR1:VOLT:LOW 0", commands)
+        self.assertIn(":SOUR1:PHAS 45", commands)
+        self.assertIn(":SOUR1:PHAS:INIT", commands)
         self.assertIn(":SOUR1:FUNC:SQU:DCYC 25", commands)
         self.assertIn(":SOUR1:BURS:NCYC 3", commands)
         self.assertIn(":SOUR1:BURS:TRIG:SOUR MAN", commands)
@@ -65,6 +69,7 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR2:PER 0.002", commands)
         self.assertIn(":SOUR2:PULS:WIDT 0.0005", commands)
         self.assertIn(":SOUR2:PULS:DCYC 50", commands)
+        self.assertIn(":SOUR2:PHAS:SYNC", commands)
         self.assertEqual(commands[-1], ":OUTP2:STAT OFF")
 
     def test_gated_burst_requires_external_trigger(self) -> None:
@@ -113,9 +118,16 @@ class ScpiBuilderTests(unittest.TestCase):
 
     def test_output_and_fire_commands_validate_channel(self) -> None:
         self.assertEqual(build_output_command(1, True), ":OUTP1:STAT ON")
+        self.assertEqual(build_burst_state_command(1, True), ":SOUR1:BURS:STAT ON")
         self.assertEqual(build_fire_burst_command(2), ":SOUR2:BURS:TRIG")
         with self.assertRaises(ValueError):
             build_output_command(3, True)
+
+    def test_phase_rejects_negative_value(self) -> None:
+        settings = ChannelSettings(phase_deg=-90.0)
+
+        with self.assertRaises(ValidationError):
+            build_channel_apply_commands(settings)
 
 
 if __name__ == "__main__":

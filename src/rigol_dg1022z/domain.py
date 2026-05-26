@@ -45,7 +45,7 @@ class InstrumentLimits:
     max_voltage_v: float = 10.0
     min_duty_percent: float = 0.001
     max_duty_percent: float = 99.999
-    min_phase_deg: float = -360.0
+    min_phase_deg: float = 0.0
     max_phase_deg: float = 360.0
     min_pulse_width_s: float = 16e-9
     max_pulse_width_s: float = 999_999.0

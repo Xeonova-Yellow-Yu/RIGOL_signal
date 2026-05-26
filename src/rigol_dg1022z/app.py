@@ -29,11 +29,19 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTextEdit,
     QToolButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from .config import AppConfig, default_app_config, default_config_path, load_app_config, save_app_config
+from .config import (
+    AppConfig,
+    DeviceConfig,
+    default_app_config,
+    default_config_path,
+    load_app_config,
+    save_app_config,
+)
 from .domain import BurstSettings, ChannelSettings
 from .scpi import WAVEFORM_CHOICES
 from .ui_state import (
@@ -102,14 +110,39 @@ class ChannelCard(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("RIGOL DG1022Z 上位机")
+        self.setWindowTitle("RIGOL DG1022Z Waveform Generator Control")
         self.resize(1600, 980)
         self._connected = False
         self._loading_form = False
         self._config_path = default_config_path()
         self._startup_config = load_app_config(self._config_path, default_app_config())
-        self.active_channel = self._startup_config.active_channel
-        self.channel_settings = dict(self._startup_config.channels)
+        self.default_channel_settings = dict(default_app_config().channels)
+        self.clients: dict[str, RigolVisaClient] = {}
+        self.device_settings: dict[str, dict[int, ChannelSettings]] = {
+            address: dict(device.channels)
+            for address, device in self._startup_config.devices.items()
+        }
+        self.device_active_channels: dict[str, int] = {
+            address: device.active_channel
+            for address, device in self._startup_config.devices.items()
+        }
+        if self._startup_config.visa_address not in self.device_settings:
+            self.device_settings[self._startup_config.visa_address] = dict(self._startup_config.channels)
+            self.device_active_channels[self._startup_config.visa_address] = self._startup_config.active_channel
+        self.active_channel = self.device_active_channels.get(
+            self._startup_config.visa_address,
+            self._startup_config.active_channel,
+        )
+        self.channel_settings = dict(
+            self.device_settings.get(self._startup_config.visa_address, self._startup_config.channels)
+        )
+        self.device_labels: dict[str, str] = {}
+        self.device_idns: dict[str, str] = {}
+        self.device_nav_buttons: dict[str, QPushButton] = {}
+        self.active_device_key = ""
+        self.sidebar_collapsed = False
+        self.connection_rows: list[dict[str, QWidget]] = []
+        self.available_resources: tuple[str, ...] = ()
         self.client = RigolVisaClient(log=self._log)
         self._build_ui()
         self._apply_style()
@@ -123,107 +156,280 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setObjectName("AppRoot")
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        root = QHBoxLayout(central)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(12)
 
-        root.addWidget(self._build_top_bar())
-
-        content = QHBoxLayout()
-        content.setSpacing(14)
-        content.addWidget(self._build_center_panel(), 1)
-        content.addWidget(self._build_right_panel())
-        root.addLayout(content, 1)
+        root.addWidget(self._build_sidebar())
+        self.pages = QStackedWidget(central)
+        self.pages.setObjectName("PageStack")
+        self.connection_page = self._build_connection_page()
+        self.control_page = self._build_control_page()
+        self.pages.addWidget(self.connection_page)
+        self.pages.addWidget(self.control_page)
+        root.addWidget(self.pages, 1)
+        self.pages.setCurrentWidget(self.connection_page)
 
         self._build_log_window()
         self._apply_elevation()
         self._connect_signals()
 
-    def _build_top_bar(self) -> QWidget:
-        top = QFrame()
-        self.top_bar = top
-        top.setObjectName("TopBar")
-        top.setFixedHeight(72)
-        layout = QHBoxLayout(top)
-        layout.setContentsMargins(12, 16, 12, 16)
-        layout.setSpacing(6)
+    def _build_sidebar(self) -> QWidget:
+        side = QFrame()
+        self.sidebar = side
+        side.setObjectName("Sidebar")
+        side.setFixedWidth(112)
+        side.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
 
-        brand = QFrame(top)
-        brand.setObjectName("BrandBlock")
-        brand.setFixedWidth(318)
-        brand_layout = QHBoxLayout(brand)
-        brand_layout.setContentsMargins(0, 0, 14, 0)
-        brand_layout.setSpacing(10)
-        badge = QLabel("DG", brand)
-        badge.setObjectName("BrandBadge")
-        badge.setFixedSize(40, 40)
-        badge.setAlignment(Qt.AlignCenter)
-        title_wrap = QWidget(brand)
-        title_wrap.setObjectName("BrandTextBlock")
-        title_layout = QVBoxLayout(title_wrap)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(0)
-        title = QLabel("RIGOL DG1022Z", title_wrap)
-        title.setObjectName("BrandTitle")
-        subtitle = QLabel("Waveform Generator Control", title_wrap)
-        subtitle.setObjectName("BrandSubtitle")
-        title_layout.addWidget(title)
-        title_layout.addWidget(subtitle)
-        brand_layout.addWidget(badge)
-        brand_layout.addWidget(title_wrap)
+        layout = QVBoxLayout(side)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(10)
 
-        status_wrap = QFrame(top)
-        status_wrap.setObjectName("StatusIndicator")
-        status_layout = QHBoxLayout(status_wrap)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(6)
-        self.status_dot = QLabel(status_wrap)
-        self.status_dot.setObjectName("StatusDot")
-        self.status_dot.setFixedSize(10, 10)
-        self.status_text = QLabel("未连接", status_wrap)
-        self.status_text.setObjectName("StatusText")
-        status_layout.addWidget(self.status_dot)
-        status_layout.addWidget(self.status_text)
-        status_wrap.setFixedWidth(64)
+        self.sidebar_toggle = QToolButton(side)
+        self.sidebar_toggle.setObjectName("SidebarMenuButton")
+        self.sidebar_toggle.setText("☰")
+        self.sidebar_toggle.setToolTip("收缩/展开导航栏")
+        self.sidebar_toggle.setFixedSize(48, 48)
+        layout.addWidget(self.sidebar_toggle, 0, Qt.AlignHCenter)
 
-        visa_label = QLabel("VISA", top)
-        visa_label.setObjectName("FieldLabel")
-        visa_label.setFixedWidth(48)
-        self.address = QComboBox(top)
-        self.address.setEditable(True)
-        self.address.addItem("TCPIP::192.168.1.191::INSTR")
-        self.address.setFixedWidth(226)
+        divider = QFrame(side)
+        divider.setObjectName("SidebarDivider")
+        divider.setFixedHeight(1)
+        layout.addWidget(divider)
 
-        self.btn_refresh = QPushButton("刷新", top)
-        self.btn_refresh.setFixedWidth(64)
-        self.btn_connect = QPushButton("连接", top)
-        self.btn_connect.setObjectName("ConnectionButton")
-        self.btn_connect.setFixedWidth(96)
+        self.nav_connect = self._nav_button("设备连接", side)
+        self.nav_connect.setChecked(True)
+        layout.addWidget(self.nav_connect)
 
-        self.btn_log = QPushButton("日志 / 指令", top)
-        self.btn_log.setFixedWidth(96)
+        self.device_nav_host = QWidget(side)
+        self.device_nav_host.setObjectName("DeviceNavHost")
+        self.device_nav_layout = QVBoxLayout(self.device_nav_host)
+        self.device_nav_layout.setContentsMargins(0, 0, 0, 0)
+        self.device_nav_layout.setSpacing(8)
+        layout.addWidget(self.device_nav_host)
 
-        for control in (
-            status_wrap,
-            self.address,
-            self.btn_refresh,
-            self.btn_connect,
-            self.btn_log,
-        ):
-            control.setFixedHeight(40)
-
-        layout.addWidget(brand)
-        layout.addSpacing(74)
-        layout.addWidget(status_wrap)
-        layout.addWidget(visa_label)
-        layout.addWidget(self.address)
-        layout.addSpacing(18)
-        layout.addWidget(self.btn_refresh)
-        layout.addSpacing(14)
-        layout.addWidget(self.btn_connect)
         layout.addStretch(1)
+
+        self.btn_log = QPushButton("日志 / 指令", side)
+        self.btn_log.setObjectName("SidebarLogButton")
+        self.btn_log.setFixedHeight(40)
         layout.addWidget(self.btn_log)
-        return top
+        return side
+
+    def _nav_button(self, text: str, parent: QWidget) -> QPushButton:
+        button = QPushButton(text, parent)
+        button.setObjectName("NavButton")
+        button.setCheckable(True)
+        button.setFixedHeight(42)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setProperty("fullText", text)
+        return button
+
+    def _build_connection_page(self) -> QWidget:
+        page = QFrame()
+        page.setObjectName("ConnectionPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(0)
+
+        card = QFrame(page)
+        self.connection_panel = card
+        card.setObjectName("ConnectionCard")
+        card.setFixedWidth(500)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 24, 24, 24)
+        card_layout.setSpacing(14)
+
+        title_block = QVBoxLayout()
+        title_block.setContentsMargins(0, 0, 0, 0)
+        title_block.setSpacing(6)
+
+        title = QLabel("设备连接配置", card)
+        title.setObjectName("ConnectionTitle")
+        subtitle = QLabel("选择信号发生器地址后，执行统一连接检测。", card)
+        subtitle.setObjectName("ConnectionSubtitle")
+        title_block.addWidget(title)
+        title_block.addWidget(subtitle)
+        card_layout.addLayout(title_block)
+
+        self.connection_rows_layout = QVBoxLayout()
+        self.connection_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.connection_rows_layout.setSpacing(8)
+        card_layout.addLayout(self.connection_rows_layout)
+        self._add_connection_row(self._startup_config.visa_address)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.btn_add_address = QPushButton("新增地址", card)
+        self.btn_add_address.setObjectName("SecondaryButton")
+        self.btn_add_address.setFixedSize(96, 38)
+        self.btn_refresh = QPushButton("刷新地址", card)
+        self.btn_refresh.setFixedSize(96, 38)
+
+        actions.addStretch(1)
+        actions.addWidget(self.btn_add_address)
+        actions.addWidget(self.btn_refresh)
+        card_layout.addLayout(actions)
+
+        device_list_title = QLabel("已连接信号发生器", card)
+        device_list_title.setObjectName("ConnectionListTitle")
+        card_layout.addWidget(device_list_title)
+        self.device_list_layout = QVBoxLayout()
+        self.device_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.device_list_layout.setSpacing(8)
+        card_layout.addLayout(self.device_list_layout)
+
+        layout.addStretch(1)
+        layout.addWidget(card, 0, Qt.AlignHCenter)
+        layout.addStretch(2)
+        self._refresh_device_list()
+        return page
+
+    def _add_connection_row(self, address: str = "") -> dict[str, QWidget]:
+        row_frame = QFrame(self.connection_panel)
+        row_frame.setObjectName("ConnectionDeviceRow")
+        row_frame.setFixedSize(430, 58)
+        row = QHBoxLayout(row_frame)
+        row.setContentsMargins(8, 7, 8, 7)
+        row.setSpacing(8)
+
+        address_box = QComboBox(row_frame)
+        address_box.setEditable(True)
+        address_box.setFixedSize(230, 36)
+        if address_box.lineEdit() is not None:
+            address_box.lineEdit().setPlaceholderText("输入 VISA 地址")
+        self._populate_address_combo(address_box, address)
+
+        status_wrap = QFrame(row_frame)
+        status_wrap.setObjectName("ConnectionStatusBadge")
+        status_layout = QHBoxLayout(status_wrap)
+        status_layout.setContentsMargins(9, 0, 9, 0)
+        status_layout.setSpacing(5)
+        status_dot = QLabel(status_wrap)
+        status_dot.setObjectName("StatusDot")
+        status_dot.setFixedSize(10, 10)
+        status_text = QLabel("未连接", status_wrap)
+        status_text.setObjectName("StatusText")
+        status_layout.addWidget(status_dot)
+        status_layout.addWidget(status_text)
+        status_wrap.setFixedSize(86, 36)
+
+        connect_button = QPushButton("连接", row_frame)
+        connect_button.setObjectName("ConnectionButton")
+        connect_button.setFixedSize(76, 36)
+
+        row.addWidget(address_box)
+        row.addWidget(status_wrap)
+        row.addWidget(connect_button)
+        row.addStretch(1)
+
+        row_data: dict[str, QWidget] = {
+            "frame": row_frame,
+            "address": address_box,
+            "status_badge": status_wrap,
+            "status_dot": status_dot,
+            "status_text": status_text,
+            "button": connect_button,
+        }
+        self.connection_rows.append(row_data)
+        if len(self.connection_rows) == 1:
+            self.address = address_box
+            self.status_badge = status_wrap
+            self.status_dot = status_dot
+            self.status_text = status_text
+
+        address_box.currentTextChanged.connect(self._save_config)
+        address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._update_connection_row_action(r))
+        connect_button.clicked.connect(lambda _checked=False, r=row_data: self._toggle_connection(r))
+        self.connection_rows_layout.addWidget(row_frame)
+        self._set_connection_row_state(row_data, False, "未连接")
+        return row_data
+
+    def _populate_address_combo(self, combo: QComboBox, current: str = "") -> None:
+        current = current.strip() or combo.currentText().strip()
+        combo.blockSignals(True)
+        combo.clear()
+        if self.available_resources:
+            combo.addItems(self.available_resources)
+        if current:
+            index = combo.findText(current)
+            if index < 0:
+                combo.insertItem(0, current)
+                index = 0
+            combo.setCurrentIndex(index)
+        else:
+            combo.setEditText("")
+        combo.blockSignals(False)
+
+    def _connection_row_address(self, row: dict[str, QWidget]) -> str:
+        address = row.get("address")
+        if isinstance(address, QComboBox):
+            return address.currentText().strip()
+        return ""
+
+    def _current_visa_address(self) -> str:
+        if self.active_device_key:
+            return self.active_device_key
+        if self.connection_rows:
+            return self._connection_row_address(self.connection_rows[0])
+        return ""
+
+    def _row_for_address(self, address: str) -> dict[str, QWidget] | None:
+        address = address.strip()
+        if not address:
+            return None
+        for row in self.connection_rows:
+            if self._connection_row_address(row) == address:
+                return row
+        return None
+
+    def _set_connection_row_state(
+        self,
+        row: dict[str, QWidget],
+        connected: bool,
+        text: str,
+        *,
+        failed: bool = False,
+    ) -> None:
+        badge = row.get("status_badge")
+        dot = row.get("status_dot")
+        label = row.get("status_text")
+        button = row.get("button")
+        address = row.get("address")
+        display = "已连接" if connected else text
+        for widget in (badge, dot, label):
+            if widget is None:
+                continue
+            widget.setProperty("connected", connected)
+            widget.setProperty("failed", failed)
+            _repolish(widget)
+        if isinstance(label, QLabel):
+            label.setText(display)
+            label.setToolTip(text)
+        if isinstance(button, QPushButton):
+            button.setText("断开" if connected else "连接")
+            button.setProperty("connected", connected)
+            _repolish(button)
+        if isinstance(address, QComboBox):
+            address.setEnabled(not connected)
+
+    def _update_connection_row_action(self, row: dict[str, QWidget]) -> None:
+        address = self._connection_row_address(row)
+        self._set_connection_row_state(row, address in self.clients, "已连接" if address in self.clients else "未连接")
+
+    def _update_connection_rows(self) -> None:
+        for row in self.connection_rows:
+            self._update_connection_row_action(row)
+
+    def _build_control_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("ControlPage")
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        layout.addWidget(self._build_center_panel(), 1)
+        layout.addWidget(self._build_right_panel())
+        return page
 
     def _build_log_window(self) -> None:
         self.log_window = QDialog(self)
@@ -426,12 +632,6 @@ class MainWindow(QMainWindow):
         selector_layout.addLayout(wave_grid)
         layout.addWidget(selector)
 
-        advanced_note = QLabel("高级内置波形折叠到「更多」或二级菜单，不占主界面", panel)
-        advanced_note.setObjectName("AdvancedNote")
-        advanced_note.setFixedHeight(48)
-        advanced_note.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        layout.addWidget(advanced_note)
-
         layout.addStretch(1)
         return panel
 
@@ -472,11 +672,24 @@ class MainWindow(QMainWindow):
         self.frequency_mode = QComboBox()
         self.frequency_mode.addItem("频率", "frequency")
         self.frequency_mode.addItem("周期", "period")
-        self.frequency_hz = _double_spin(1e-6, 25e6, 1000.0, 6, " Hz", 100.0)
-        self.period_s = _double_spin(4e-8, 1e6, 0.001, 9, " s", 0.0001)
-        self.phase_deg = _double_spin(-360.0, 360.0, 0.0, 3, " deg", 1.0)
-        self.frequency_hz_editor = _spin_editor(self.frequency_hz)
-        self.period_s_editor = _spin_editor(self.period_s)
+        self.frequency_unit = QComboBox()
+        self.frequency_unit.setObjectName("UnitCombo")
+        self.frequency_unit.addItem("Hz", "Hz")
+        self.frequency_unit.addItem("kHz", "kHz")
+        self.frequency_unit.addItem("MHz", "MHz")
+        self.frequency_unit.setFixedWidth(62)
+        self.period_unit = QComboBox()
+        self.period_unit.setObjectName("UnitCombo")
+        self.period_unit.addItem("ms", "ms")
+        self.period_unit.addItem("s", "s")
+        self.period_unit.setFixedWidth(54)
+        self._frequency_display_unit = "kHz"
+        self._period_display_unit = "ms"
+        self.frequency_hz = _double_spin(1e-9, 25_000.0, 1.0, 6, "", 0.1)
+        self.period_s = _double_spin(0.00004, 1_000_000_000.0, 1.0, 6, "", 0.1)
+        self.phase_deg = _double_spin(0.0, 360.0, 0.0, 3, " deg", 1.0)
+        self.frequency_hz_editor = _spin_editor(self.frequency_hz, self.frequency_unit)
+        self.period_s_editor = _spin_editor(self.period_s, self.period_unit)
         self.phase_deg_editor = _spin_editor(self.phase_deg)
         timing_form.addRow("输入方式", self.frequency_mode)
         timing_form.addRow("频率", self.frequency_hz_editor)
@@ -550,7 +763,7 @@ class MainWindow(QMainWindow):
         self.burst_cycles.setRange(1, 1_000_000)
         self.burst_cycles.setValue(1)
         self.burst_internal_period = _double_spin(1e-6, 1e6, 0.01, 6, " s", 0.001)
-        self.burst_phase = _double_spin(-360.0, 360.0, 0.0, 3, " deg", 1.0)
+        self.burst_phase = _double_spin(0.0, 360.0, 0.0, 3, " deg", 1.0)
         self.burst_delay = _double_spin(0.0, 1e6, 0.0, 6, " s", 0.001)
         self.burst_gate_polarity = QComboBox()
         self.burst_gate_polarity.addItem("正门控", "NORM")
@@ -576,12 +789,13 @@ class MainWindow(QMainWindow):
         return panel
 
     def _connect_signals(self) -> None:
+        self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        self.nav_connect.clicked.connect(self._show_connection_page)
+        self.btn_add_address.clicked.connect(lambda: self._add_connection_row(""))
         self.btn_refresh.clicked.connect(self._refresh_resources)
-        self.btn_connect.clicked.connect(self._toggle_connection)
         self.btn_log.clicked.connect(self._show_log_window)
         self.btn_clear_log.clicked.connect(self.log.clear)
         self.btn_close_log.clicked.connect(self.log_window.hide)
-        self.address.currentTextChanged.connect(self._save_config)
         self.btn_apply.clicked.connect(self._apply_current)
         self.btn_apply_all.clicked.connect(self._apply_all)
         self.btn_output_toggle.clicked.connect(self._toggle_output)
@@ -600,7 +814,9 @@ class MainWindow(QMainWindow):
             self.burst_trigger_slope,
         ):
             widget.currentIndexChanged.connect(self._on_form_changed)
-        self.burst_enabled.toggled.connect(self._on_form_changed)
+        self.frequency_unit.currentIndexChanged.connect(self._on_frequency_unit_changed)
+        self.period_unit.currentIndexChanged.connect(self._on_period_unit_changed)
+        self.burst_enabled.toggled.connect(self._on_burst_enabled_toggled)
         for spin in (
             self.frequency_hz,
             self.period_s,
@@ -621,14 +837,153 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._save_config()
-        self.client.disconnect()
+        for client in list(self.clients.values()):
+            client.disconnect()
+        if not self.clients:
+            self.client.disconnect()
         super().closeEvent(event)
+
+    def _show_connection_page(self) -> None:
+        self.pages.setCurrentWidget(self.connection_page)
+        self._set_nav_checked(self.nav_connect)
+
+    def _toggle_sidebar(self) -> None:
+        self._set_sidebar_collapsed(not self.sidebar_collapsed)
+
+    def _set_sidebar_collapsed(self, collapsed: bool) -> None:
+        self.sidebar_collapsed = collapsed
+        self.sidebar.setFixedWidth(68 if collapsed else 112)
+        self.sidebar_toggle.setToolTip("展开导航栏" if collapsed else "收缩导航栏")
+        self.nav_connect.setText("连接" if collapsed else "设备连接")
+        self.btn_log.setText("日志" if collapsed else "日志 / 指令")
+        for address, button in self.device_nav_buttons.items():
+            button.setText(self._device_nav_text(address, collapsed))
+
+    def _set_nav_checked(self, active_button: QPushButton | None) -> None:
+        self.nav_connect.setChecked(active_button is self.nav_connect)
+        for button in self.device_nav_buttons.values():
+            button.setChecked(button is active_button)
+
+    def _register_device(self, address: str, idn: str) -> None:
+        if address not in self.device_settings:
+            self.device_settings[address] = dict(self.default_channel_settings)
+            self.device_active_channels[address] = 1
+        label = self._device_label(idn, len(self.device_labels) + 1)
+        self.device_labels[address] = label
+        self.device_idns[address] = idn
+
+        if address not in self.device_nav_buttons:
+            nav = self._nav_button(self._device_nav_text(address, self.sidebar_collapsed), self.device_nav_host)
+            nav.setProperty("fullText", label)
+            nav.clicked.connect(lambda _checked=False, key=address: self._select_device(key))
+            self.device_nav_buttons[address] = nav
+            self.device_nav_layout.addWidget(nav)
+        else:
+            self.device_nav_buttons[address].setProperty("fullText", label)
+            self.device_nav_buttons[address].setText(self._device_nav_text(address, self.sidebar_collapsed))
+        self._refresh_device_list()
+
+    def _device_label(self, idn: str, number: int) -> str:
+        idn_upper = idn.upper()
+        if "DG1022Z" in idn_upper:
+            model = "DG1022Z"
+        elif "DG1022U" in idn_upper:
+            model = "DG1022U"
+        elif "DG" in idn_upper:
+            model = "DG"
+        else:
+            model = "设备"
+        return f"{model} {number}"
+
+    def _device_nav_text(self, address: str, collapsed: bool) -> str:
+        label = self.device_labels.get(address, "设备")
+        if not collapsed:
+            return label
+        number = "".join(ch for ch in label if ch.isdigit())[-1:] or str(len(self.device_nav_buttons) + 1)
+        return f"DG{number}"
+
+    def _select_device(self, address: str) -> None:
+        client = self.clients.get(address)
+        if client is None:
+            return
+        if self.active_device_key:
+            self.device_settings[self.active_device_key] = dict(self.channel_settings)
+            self.device_active_channels[self.active_device_key] = self.active_channel
+        self.active_device_key = address
+        self.client = client
+        if address not in self.device_settings:
+            self.device_settings[address] = dict(self.default_channel_settings)
+        self.channel_settings = dict(self.device_settings[address])
+        self.active_channel = self.device_active_channels.get(address, 1)
+        row = self._row_for_address(address)
+        if row is None:
+            row = self._add_connection_row(address)
+        self._set_connection_row_state(row, True, "已连接")
+        if self.active_channel not in self.channel_settings:
+            self.active_channel = 1
+        self._load_settings_to_form(self.channel_settings[self.active_channel])
+        self.pages.setCurrentWidget(self.control_page)
+        self._set_nav_checked(self.device_nav_buttons.get(address))
+        idn = self.device_idns.get(address, address)
+        self._set_connected(True, idn)
+        self._save_config()
+        self._log(f"切换到 {self.device_labels.get(address, '设备')}: {address}")
+
+    def _refresh_device_list(self) -> None:
+        if not hasattr(self, "device_list_layout"):
+            return
+        while self.device_list_layout.count():
+            item = self.device_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self.clients:
+            empty = QLabel("暂无已连接信号发生器，请在上方输入或刷新 VISA 地址后连接。")
+            empty.setObjectName("EmptyState")
+            self.device_list_layout.addWidget(empty)
+            return
+
+        for address in self.clients:
+            card = QFrame()
+            card.setObjectName("DeviceListCard")
+            card.setFixedHeight(74)
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(14, 10, 14, 10)
+            card_layout.setSpacing(12)
+
+            text = QVBoxLayout()
+            text.setContentsMargins(0, 0, 0, 0)
+            text.setSpacing(4)
+            title = QLabel(self.device_labels.get(address, "信号发生器"), card)
+            title.setObjectName("DeviceTitle")
+            meta = QLabel(address, card)
+            meta.setObjectName("DeviceMeta")
+            text.addWidget(title)
+            text.addWidget(meta)
+
+            state = QLabel("已连接", card)
+            state.setObjectName("ConnectedPill")
+            state.setAlignment(Qt.AlignCenter)
+            state.setFixedSize(60, 24)
+
+            open_btn = QPushButton("打开配置", card)
+            open_btn.setObjectName("OpenDeviceButton")
+            open_btn.setFixedSize(86, 30)
+            open_btn.clicked.connect(lambda _checked=False, key=address: self._select_device(key))
+
+            card_layout.addLayout(text, 1)
+            card_layout.addWidget(state)
+            card_layout.addWidget(open_btn)
+            self.device_list_layout.addWidget(card)
 
     def _select_channel(self, channel: int) -> None:
         if channel == self.active_channel:
             return
         self._save_active_settings()
         self.active_channel = channel
+        if self.active_device_key:
+            self.device_active_channels[self.active_device_key] = channel
         self._load_settings_to_form(self.channel_settings[channel])
         self._save_config()
 
@@ -638,6 +993,39 @@ class MainWindow(QMainWindow):
         if waveform in self.wave_buttons:
             self.wave_buttons[waveform].setChecked(True)
         self._on_form_changed()
+
+    def _on_frequency_unit_changed(self) -> None:
+        old_unit = self._frequency_display_unit
+        new_unit = str(self.frequency_unit.currentData() or "kHz")
+        actual_hz = self._frequency_display_to_hz(self.frequency_hz.value(), old_unit)
+        self._frequency_display_unit = new_unit
+        self._configure_frequency_spin(new_unit, actual_hz)
+        if not self._loading_form:
+            self._on_form_changed()
+
+    def _on_period_unit_changed(self) -> None:
+        old_unit = self._period_display_unit
+        new_unit = str(self.period_unit.currentData() or "ms")
+        actual_s = self._period_display_to_seconds(self.period_s.value(), old_unit)
+        self._period_display_unit = new_unit
+        self._configure_period_spin(new_unit, actual_s)
+        if not self._loading_form:
+            self._on_form_changed()
+
+    def _on_burst_enabled_toggled(self, enabled: bool) -> None:
+        if self._loading_form:
+            return
+        self._on_form_changed()
+        if self.burst_enabled.isChecked() != enabled:
+            return
+        if self.active_device_key not in self.clients:
+            return
+        try:
+            command = self.client.set_burst_enabled(self.active_channel, enabled)
+        except Exception as exc:
+            self._show_error("设置 Burst 失败", exc)
+            return
+        self._log(f"CH{self.active_channel} Burst {'开启' if enabled else '关闭'}: {command}")
 
     def _on_form_changed(self) -> None:
         if self._loading_form:
@@ -649,6 +1037,9 @@ class MainWindow(QMainWindow):
 
     def _save_active_settings(self) -> None:
         self.channel_settings[self.active_channel] = self._settings_from_form()
+        if self.active_device_key:
+            self.device_settings[self.active_device_key] = dict(self.channel_settings)
+            self.device_active_channels[self.active_device_key] = self.active_channel
 
     def _save_config(self) -> None:
         if self._loading_form or not hasattr(self, "address"):
@@ -656,15 +1047,93 @@ class MainWindow(QMainWindow):
         self._save_active_settings()
         config = AppConfig(
             active_channel=self.active_channel,
-            visa_address=self.address.currentText().strip(),
+            visa_address=self._current_visa_address(),
             channels=dict(self.channel_settings),
+            devices={
+                address: DeviceConfig(
+                    active_channel=self.device_active_channels.get(address, 1),
+                    channels=dict(channels),
+                )
+                for address, channels in self.device_settings.items()
+            },
         )
         try:
             save_app_config(config, self._config_path)
         except Exception as exc:
             self._log(f"保存配置失败: {exc}")
 
+    def _frequency_display_to_hz(self, value: float, unit: str | None = None) -> float:
+        factors = {"Hz": 1.0, "kHz": 1_000.0, "MHz": 1_000_000.0}
+        return float(value) * factors.get(unit or self._frequency_display_unit, 1_000.0)
+
+    def _period_display_to_seconds(self, value: float, unit: str | None = None) -> float:
+        factors = {"ms": 0.001, "s": 1.0}
+        return float(value) * factors.get(unit or self._period_display_unit, 0.001)
+
+    def _configure_frequency_spin(self, unit: str, actual_hz: float) -> None:
+        factors = {"Hz": 1.0, "kHz": 1_000.0, "MHz": 1_000_000.0}
+        decimals = {"Hz": 6, "kHz": 6, "MHz": 9}
+        steps = {"Hz": 1.0, "kHz": 0.1, "MHz": 0.001}
+        factor = factors.get(unit, 1_000.0)
+        value = _clamp(actual_hz / factor, 1e-6 / factor, 25e6 / factor)
+        self.frequency_hz.blockSignals(True)
+        self.frequency_hz.setDecimals(decimals.get(unit, 6))
+        self.frequency_hz.setRange(1e-6 / factor, 25e6 / factor)
+        self.frequency_hz.setSingleStep(steps.get(unit, 0.1))
+        self.frequency_hz.setValue(value)
+        self.frequency_hz.blockSignals(False)
+
+    def _configure_period_spin(self, unit: str, actual_s: float) -> None:
+        factors = {"ms": 0.001, "s": 1.0}
+        decimals = {"ms": 6, "s": 9}
+        steps = {"ms": 0.1, "s": 0.001}
+        factor = factors.get(unit, 0.001)
+        value = _clamp(actual_s / factor, 4e-8 / factor, 1e6 / factor)
+        self.period_s.blockSignals(True)
+        self.period_s.setDecimals(decimals.get(unit, 6))
+        self.period_s.setRange(4e-8 / factor, 1e6 / factor)
+        self.period_s.setSingleStep(steps.get(unit, 0.1))
+        self.period_s.setValue(value)
+        self.period_s.blockSignals(False)
+
+    def _preferred_frequency_unit(self, frequency_hz: float) -> str:
+        if abs(frequency_hz) >= 1_000_000.0:
+            return "MHz"
+        if abs(frequency_hz) >= 1_000.0:
+            return "kHz"
+        return "Hz"
+
+    def _preferred_period_unit(self, period_s: float) -> str:
+        return "s" if abs(period_s) >= 1.0 else "ms"
+
+    def _calculated_pulse_width_s(
+        self,
+        waveform: str,
+        frequency_mode: str,
+        frequency_hz: float,
+        period_s: float,
+        duty_percent: float,
+    ) -> float:
+        if waveform.strip().upper() != "PULS":
+            return self.pulse_width_s.value()
+        base_period = period_s
+        if frequency_mode == "frequency" and frequency_hz > 0:
+            base_period = 1.0 / frequency_hz
+        return max(16e-9, base_period * duty_percent / 100.0)
+
     def _settings_from_form(self) -> ChannelSettings:
+        waveform = self._selected_waveform()
+        frequency_mode = self.frequency_mode.currentData()
+        frequency_hz = self._frequency_display_to_hz(self.frequency_hz.value())
+        period_s = self._period_display_to_seconds(self.period_s.value())
+        duty_percent = self.duty_percent.value()
+        pulse_width_s = self._calculated_pulse_width_s(
+            waveform,
+            frequency_mode,
+            frequency_hz,
+            period_s,
+            duty_percent,
+        )
         burst = BurstSettings(
             enabled=self.burst_enabled.isChecked(),
             mode=self.burst_mode.currentData(),
@@ -678,18 +1147,18 @@ class MainWindow(QMainWindow):
         )
         return ChannelSettings(
             channel=self.active_channel,
-            waveform=self._selected_waveform(),
-            frequency_mode=self.frequency_mode.currentData(),
-            frequency_hz=self.frequency_hz.value(),
-            period_s=self.period_s.value(),
+            waveform=waveform,
+            frequency_mode=frequency_mode,
+            frequency_hz=frequency_hz,
+            period_s=period_s,
             level_mode=self.level_mode.currentData(),
             amplitude_vpp=self.amplitude_vpp.value(),
             offset_v=self.offset_v.value(),
             high_v=self.high_v.value(),
             low_v=self.low_v.value(),
-            duty_percent=self.duty_percent.value(),
+            duty_percent=duty_percent,
             phase_deg=self.phase_deg.value(),
-            pulse_width_s=self.pulse_width_s.value(),
+            pulse_width_s=pulse_width_s,
             ramp_symmetry_percent=self.ramp_symmetry.value(),
             output_enabled=self.channel_settings[self.active_channel].output_enabled,
             load=self.load.currentData(),
@@ -701,8 +1170,14 @@ class MainWindow(QMainWindow):
         self.active_channel = settings.channel
         self._set_waveform_button(settings.waveform)
         _set_combo_data(self.frequency_mode, settings.frequency_mode)
-        self.frequency_hz.setValue(settings.frequency_hz)
-        self.period_s.setValue(settings.period_s)
+        frequency_unit = self._preferred_frequency_unit(settings.frequency_hz)
+        period_unit = self._preferred_period_unit(settings.period_s)
+        self._frequency_display_unit = frequency_unit
+        self._period_display_unit = period_unit
+        _set_combo_data(self.frequency_unit, frequency_unit, silent=True)
+        _set_combo_data(self.period_unit, period_unit, silent=True)
+        self._configure_frequency_spin(frequency_unit, settings.frequency_hz)
+        self._configure_period_spin(period_unit, settings.period_s)
         self.phase_deg.setValue(settings.phase_deg)
         _set_combo_data(self.level_mode, settings.level_mode)
         self.amplitude_vpp.setValue(settings.amplitude_vpp)
@@ -851,37 +1326,86 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._show_error("刷新 VISA 资源失败", exc)
             return
-        current = self.address.currentText().strip()
-        self.address.clear()
-        if resources:
-            self.address.addItems(resources)
-        if current:
-            index = self.address.findText(current)
-            if index < 0:
-                self.address.insertItem(0, current)
-                index = 0
-            self.address.setCurrentIndex(index)
+        self.available_resources = resources
+        for row in self.connection_rows:
+            address_box = row.get("address")
+            if isinstance(address_box, QComboBox) and address_box.isEnabled():
+                self._populate_address_combo(address_box)
         self._log(f"发现 {len(resources)} 个 VISA 资源")
 
-    def _connect(self) -> None:
+    def _connect(self, row: dict[str, QWidget] | None = None) -> None:
+        row = row or (self.connection_rows[0] if self.connection_rows else None)
+        if row is None:
+            return
+        address = self._connection_row_address(row)
+        if not address:
+            self._set_connection_row_state(row, False, "地址为空", failed=True)
+            self._log("连接失败: VISA 地址为空")
+            return
+        if address in self.clients:
+            self._set_connection_row_state(row, True, "已连接")
+            self._select_device(address)
+            return
+        client = RigolVisaClient(log=self._log)
         try:
-            result = self.client.connect(self.address.currentText())
+            result = client.connect(address)
         except Exception as exc:
-            self._set_connected(False, "连接失败")
+            self._set_connection_row_state(row, False, "连接失败", failed=True)
+            self._log("连接排查提示：请检查网线、IP 地址、VISA 驱动和设备电源。")
             self._show_error("连接失败", exc)
             return
-        self._set_connected(True, f"[{result.backend}] {result.idn}")
+        self.clients[address] = client
+        self.client = client
+        self._register_device(address, result.idn)
+        self._select_device(address)
+        self._log(f"连接成功: {address} [{result.backend}] {result.idn}")
 
-    def _disconnect(self) -> None:
-        self.client.disconnect()
-        self._set_connected(False, "未连接")
-        self._log("已断开")
-
-    def _toggle_connection(self) -> None:
-        if self._connected:
-            self._disconnect()
+    def _disconnect(self, address: str | None = None) -> None:
+        address = (address or self.active_device_key or self._current_visa_address()).strip()
+        self._save_active_settings()
+        client = self.clients.pop(address, None)
+        if client is None:
+            row = self._row_for_address(address)
+            if row is not None:
+                self._set_connection_row_state(row, False, "未连接")
+            self._update_action_state()
+            return
         else:
-            self._connect()
+            client.disconnect()
+
+        nav = self.device_nav_buttons.pop(address, None)
+        if nav is not None:
+            nav.setParent(None)
+            nav.deleteLater()
+        self.device_labels.pop(address, None)
+        self.device_idns.pop(address, None)
+        row = self._row_for_address(address)
+        if row is not None:
+            self._set_connection_row_state(row, False, "未连接")
+        self._refresh_device_list()
+        self._log(f"已断开: {address or '当前设备'}")
+
+        if address == self.active_device_key and self.clients:
+            self._select_device(next(iter(self.clients)))
+            return
+        if self.clients:
+            self._update_action_state()
+            return
+
+        self.active_device_key = ""
+        self.client = RigolVisaClient(log=self._log)
+        self._set_connected(False, "未连接")
+        self._show_connection_page()
+
+    def _toggle_connection(self, row: dict[str, QWidget] | None = None) -> None:
+        row = row or (self.connection_rows[0] if self.connection_rows else None)
+        if row is None:
+            return
+        current = self._connection_row_address(row)
+        if current in self.clients:
+            self._disconnect(current)
+        else:
+            self._connect(row)
 
     def _query_idn(self) -> None:
         try:
@@ -962,19 +1486,15 @@ class MainWindow(QMainWindow):
     def _set_connected(self, connected: bool, text: str) -> None:
         self._connected = connected
         failed = text == "连接失败"
-        display_text = "已连接" if connected else text
-        self.status_text.setText(display_text)
-        self.status_text.setToolTip(text)
-        self.status_text.setProperty("connected", connected)
-        self.status_text.setProperty("failed", failed)
-        self.status_dot.setProperty("connected", connected)
-        self.status_dot.setProperty("failed", failed)
-        _repolish(self.status_text)
-        _repolish(self.status_dot)
+        row = self._row_for_address(self.active_device_key) or (
+            self.connection_rows[0] if self.connection_rows else None
+        )
+        if row is not None:
+            self._set_connection_row_state(row, connected, text, failed=failed)
         self._update_action_state()
 
     def _update_action_state(self) -> None:
-        connected = self._connected
+        connected = bool(self.active_device_key and self.active_device_key in self.clients)
         settings = self.channel_settings[self.active_channel]
         burst = burst_ui_state(
             settings.waveform,
@@ -982,9 +1502,7 @@ class MainWindow(QMainWindow):
             settings.burst.mode,
             settings.burst.trigger_source,
         )
-        self.btn_connect.setText("断开" if connected else "连接")
-        self.btn_connect.setProperty("connected", connected)
-        _repolish(self.btn_connect)
+        self._update_connection_rows()
         self.btn_apply.setEnabled(connected)
         self.btn_apply_all.setEnabled(connected)
         self.btn_output_toggle.setEnabled(connected)
@@ -1011,7 +1529,8 @@ class MainWindow(QMainWindow):
 
     def _apply_elevation(self) -> None:
         for widget, blur, offset, alpha in (
-            (self.top_bar, 18, 3, 26),
+            (self.sidebar, 18, 3, 20),
+            (self.connection_panel, 18, 3, 18),
             (self.center_panel, 20, 4, 20),
             (self.right_panel, 20, 4, 18),
         ):
@@ -1063,7 +1582,7 @@ def _double_spin(
     return spin
 
 
-def _spin_editor(spin: QDoubleSpinBox | QSpinBox) -> QWidget:
+def _spin_editor(spin: QDoubleSpinBox | QSpinBox, unit: QComboBox | None = None) -> QWidget:
     spin.setObjectName("ArrowSpin")
     spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
     spin.setFrame(False)
@@ -1095,6 +1614,8 @@ def _spin_editor(spin: QDoubleSpinBox | QSpinBox) -> QWidget:
 
     layout.addWidget(btn_up)
     layout.addWidget(btn_down)
+    if unit is not None:
+        layout.addWidget(unit)
     return editor
 
 
@@ -1138,6 +1659,8 @@ def _format_timing(settings: ChannelSettings) -> str:
     if waveform in {"DC", "NOIS", "NOISE"}:
         return "Timing OFF"
     if settings.frequency_mode == "period":
+        if abs(settings.period_s) < 1.0:
+            return f"{settings.period_s * 1_000.0:g} ms"
         return f"{settings.period_s:g} s"
     hz = settings.frequency_hz
     if hz >= 1_000_000.0:
@@ -1181,6 +1704,10 @@ def _format_waveform_name(waveform: str) -> str:
 
 def _format_load(load: str) -> str:
     return "High-Z" if load == "INF" else "50 ohm"
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
 def _format_channel_brief(settings: ChannelSettings) -> str:
@@ -1240,10 +1767,117 @@ QScrollArea#ParameterScroll, QWidget#ParameterScrollBody {
     background: transparent;
     border: none;
 }
-QFrame#TopBar, QFrame#CenterPanel {
+QWidget#AppRoot, QWidget#ControlPage, QStackedWidget#PageStack {
+    background: #eef4fa;
+    border: none;
+}
+QFrame#Sidebar {
+    background: #fbfdff;
+    border: 1px solid #dce5ef;
+    border-radius: 12px;
+}
+QFrame#SidebarDivider {
+    background: #dbe5ef;
+    border: none;
+}
+QToolButton#SidebarMenuButton {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: #536478;
+    font-family: "Segoe UI Symbol", "Microsoft YaHei UI";
+    font-size: 26px;
+    font-weight: 800;
+    padding: 0;
+}
+QToolButton#SidebarMenuButton:hover {
+    background: transparent;
+    color: #1879d9;
+}
+QWidget#DeviceNavHost {
+    background: transparent;
+}
+QPushButton#NavButton {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    color: #536478;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0 6px;
+}
+QPushButton#NavButton:hover {
+    background: #f2f7fc;
+    border-color: #d9e5f0;
+    color: #1e6fbf;
+}
+QPushButton#NavButton:checked {
+    background: #e9f4ff;
+    border-color: #9bcdf6;
+    color: #1879d9;
+}
+QPushButton#SidebarLogButton {
+    background: #ffffff;
+    border: 1px solid #cfddec;
+    border-radius: 9px;
+    color: #2f4a68;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 4px;
+}
+QPushButton#SidebarLogButton:hover {
+    border-color: #338de6;
+    color: #1879d9;
+}
+QFrame#ConnectionPage {
+    background: transparent;
+    border: none;
+}
+QFrame#ConnectionCard, QFrame#CenterPanel {
     background: #fbfdff;
     border: 1px solid #dce5ef;
     border-radius: 11px;
+}
+QFrame#ConnectionCard {
+    background: #ffffff;
+    border-color: #d6e0eb;
+    border-radius: 12px;
+}
+QLabel#ConnectionTitle {
+    color: #0f2f4d;
+    font-size: 24px;
+    font-weight: 800;
+    background: transparent;
+}
+QLabel#ConnectionSubtitle {
+    color: #607387;
+    font-size: 13px;
+    background: transparent;
+}
+QFrame#ConnectionDeviceRow {
+    background: #f7fafc;
+    border: 1px solid #dce5ef;
+    border-radius: 10px;
+}
+QFrame#ConnectionStatusBadge {
+    background: #f7fafc;
+    border: 1px solid #dce5ef;
+    border-radius: 9px;
+}
+QFrame#ConnectionStatusBadge[connected="true"] {
+    background: #e8f6ee;
+    border-color: #bfe5cf;
+}
+QFrame#ConnectionStatusBadge[failed="true"] {
+    background: #fff2f0;
+    border-color: #f2b8b5;
+}
+QLabel#ConnectionListTitle {
+    color: #0f2f4d;
+    font-size: 14px;
+    font-weight: 800;
+    background: transparent;
+    padding-top: 4px;
 }
 QFrame#RightPanel {
     background: #f3f7fb;
@@ -1354,6 +1988,34 @@ QFrame#Card {
     border: 1px solid #dce5ef;
     border-radius: 10px;
 }
+QFrame#DeviceListCard {
+    background: #ffffff;
+    border: 1px solid #dce5ef;
+    border-radius: 10px;
+}
+QLabel#DeviceTitle {
+    color: #0f2f4d;
+    font-size: 13px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#DeviceMeta, QLabel#EmptyState {
+    color: #607387;
+    font-size: 12px;
+    background: transparent;
+}
+QLabel#ConnectedPill {
+    background: #e8f6ee;
+    border: 1px solid #bfe5cf;
+    border-radius: 7px;
+    color: #2e9f61;
+    font-weight: 700;
+    font-size: 11px;
+}
+QPushButton#OpenDeviceButton {
+    padding: 3px 8px;
+    font-size: 11px;
+}
 QFrame#ChannelCard {
     background: #ffffff;
     border: 1px solid #dce5ef;
@@ -1462,6 +2124,18 @@ QFrame#RightPanel QComboBox, QFrame#RightPanel QDoubleSpinBox, QFrame#RightPanel
 }
 QFrame#RightPanel QComboBox::drop-down {
     width: 18px;
+}
+QFrame#SpinEditorBox QComboBox#UnitCombo {
+    background: transparent;
+    border: none;
+    border-left: 1px solid #d4dfeb;
+    border-radius: 0;
+    min-height: 18px;
+    padding: 1px 2px 1px 7px;
+    color: #536478;
+}
+QFrame#SpinEditorBox QComboBox#UnitCombo::drop-down {
+    width: 14px;
 }
 QFrame#SpinEditorBox {
     background: #ffffff;
@@ -1578,14 +2252,6 @@ QLabel#SummaryLineStrong {
     font-size: 12px;
     font-weight: 700;
     background: transparent;
-}
-QLabel#AdvancedNote {
-    background: #f6fbff;
-    border: 1px solid #d8e0ea;
-    border-radius: 8px;
-    color: #607387;
-    font-size: 12px;
-    padding-left: 12px;
 }
 QFrame#InlineDetails {
     background: transparent;

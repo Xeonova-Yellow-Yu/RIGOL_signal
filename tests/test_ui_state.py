@@ -35,6 +35,12 @@ class UiStateTests(unittest.TestCase):
         self.assertFalse(state.pulse_width)
         self.assertFalse(state.ramp_symmetry)
 
+    def test_pulse_uses_duty_only(self) -> None:
+        state = waveform_ui_state("PULS")
+
+        self.assertTrue(state.duty)
+        self.assertFalse(state.pulse_width)
+
     def test_level_state_follows_mode(self) -> None:
         state = level_ui_state("SIN", "high_low")
 

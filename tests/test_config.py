@@ -11,7 +11,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from rigol_dg1022z.config import AppConfig, default_app_config, load_app_config, save_app_config
+from rigol_dg1022z.config import (
+    AppConfig,
+    DeviceConfig,
+    default_app_config,
+    load_app_config,
+    save_app_config,
+)
 from rigol_dg1022z.domain import BurstSettings, ChannelSettings
 
 
@@ -49,6 +55,51 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.channels[1].load, "50")
             self.assertEqual(loaded.channels[2].period_s, 0.002)
             self.assertEqual(loaded.channels[2].burst.cycles, 7)
+            self.assertIn("USB0::0x1AB1::0x0642::DG1::INSTR", loaded.devices)
+            self.assertEqual(
+                loaded.devices["USB0::0x1AB1::0x0642::DG1::INSTR"].channels[1].waveform,
+                "SQU",
+            )
+
+    def test_device_configs_keep_independent_channel_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            config = AppConfig(
+                active_channel=1,
+                visa_address="TCPIP::192.168.1.191::INSTR",
+                channels={
+                    1: ChannelSettings(channel=1, waveform="SIN", frequency_hz=1000.0),
+                    2: ChannelSettings(channel=2, waveform="SQU", frequency_hz=2000.0),
+                },
+                devices={
+                    "TCPIP::192.168.1.191::INSTR": DeviceConfig(
+                        active_channel=1,
+                        channels={
+                            1: ChannelSettings(channel=1, waveform="SIN", frequency_hz=1111.0),
+                            2: ChannelSettings(channel=2, waveform="SQU", frequency_hz=2222.0),
+                        },
+                    ),
+                    "TCPIP::192.168.1.192::INSTR": DeviceConfig(
+                        active_channel=2,
+                        channels={
+                            1: ChannelSettings(channel=1, waveform="RAMP", frequency_hz=3333.0),
+                            2: ChannelSettings(channel=2, waveform="PULS", frequency_hz=4444.0),
+                        },
+                    ),
+                },
+            )
+
+            save_app_config(config, path)
+            loaded = load_app_config(path, default_app_config())
+
+            first = loaded.devices["TCPIP::192.168.1.191::INSTR"]
+            second = loaded.devices["TCPIP::192.168.1.192::INSTR"]
+            self.assertEqual(first.active_channel, 1)
+            self.assertEqual(first.channels[1].frequency_hz, 1111.0)
+            self.assertEqual(first.channels[2].frequency_hz, 2222.0)
+            self.assertEqual(second.active_channel, 2)
+            self.assertEqual(second.channels[1].waveform, "RAMP")
+            self.assertEqual(second.channels[2].frequency_hz, 4444.0)
 
     def test_missing_or_invalid_config_uses_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

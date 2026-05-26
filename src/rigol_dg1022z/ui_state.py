@@ -50,7 +50,7 @@ def waveform_ui_state(waveform: str) -> WaveformUiState:
         high_low_mode=not (is_dc or is_noise),
         phase=not (is_dc or is_noise),
         duty=normalized in {"SQU", "PULS"},
-        pulse_width=normalized == "PULS",
+        pulse_width=False,
         ramp_symmetry=normalized == "RAMP",
         burst=not (is_dc or is_noise),
     )

@@ -115,6 +115,8 @@ def build_channel_apply_commands(
         commands.append(f"{src}:FUNC:RAMP:SYMM {_num(settings.ramp_symmetry_percent)}")
 
     commands.extend(_build_burst_commands(src, settings.burst))
+    if supports_phase:
+        commands.append(build_phase_align_command(ch))
     commands.append(f"{out}:LOAD {'INF' if settings.load == 'INF' else '50'}")
     commands.append(f"{out}:STAT {_state(settings.output_enabled)}")
     return commands
@@ -122,7 +124,11 @@ def build_channel_apply_commands(
 
 def _build_burst_commands(src: str, burst: BurstSettings) -> list[str]:
     if not burst.enabled:
-        return [f"{src}:BURS:STAT OFF"]
+        return [
+            f"{src}:SWE:STAT OFF",
+            f"{src}:MOD:STAT OFF",
+            f"{src}:BURS:STAT OFF",
+        ]
 
     commands = [
         f"{src}:SWE:STAT OFF",
@@ -153,6 +159,12 @@ def build_output_command(channel: int, enabled: bool) -> str:
     return f":OUTP{channel}:STAT {_state(enabled)}"
 
 
+def build_burst_state_command(channel: int, enabled: bool) -> str:
+    if channel not in (1, 2):
+        raise ValueError("DG1022Z 只支持 CH1/CH2")
+    return f":SOUR{channel}:BURS:STAT {_state(enabled)}"
+
+
 def build_fire_burst_command(channel: int) -> str:
     if channel not in (1, 2):
         raise ValueError("DG1022Z 只支持 CH1/CH2")
@@ -164,4 +176,6 @@ def build_phase_align_command(channel: int | None = None) -> str:
         return ":SOUR:PHAS:INIT"
     if channel not in (1, 2):
         raise ValueError("DG1022Z 只支持 CH1/CH2")
-    return f":SOUR{channel}:PHAS:INIT"
+    if channel == 1:
+        return ":SOUR1:PHAS:INIT"
+    return ":SOUR2:PHAS:SYNC"
