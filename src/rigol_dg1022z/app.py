@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from .config import (
     AppConfig,
+    ChannelUiConfig,
     DeviceConfig,
     default_app_config,
     default_config_path,
@@ -63,8 +64,8 @@ class ChannelCard(QFrame):
         self.setObjectName("ChannelCard")
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(42)
-        self.setMinimumWidth(260)
-        self.setMaximumWidth(332)
+        self.setMinimumWidth(150)
+        self.setMaximumWidth(220)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
@@ -74,16 +75,13 @@ class ChannelCard(QFrame):
         self.title = QLabel(f"CH{channel}")
         self.title.setObjectName("ChannelCardTitle")
         self.title.setFixedWidth(38)
-        self.meta = QLabel("SIN | 1 kHz | 2 Vpp")
-        self.meta.setObjectName("ChannelCardMeta")
-        self.meta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.output = QLabel("输出 OFF")
         self.output.setObjectName("ChannelOutputBadge")
         self.output.setFixedSize(68, 22)
         self.output.setAlignment(Qt.AlignCenter)
 
         layout.addWidget(self.title)
-        layout.addWidget(self.meta, 1)
+        layout.addStretch(1)
         layout.addWidget(self.output, 0, Qt.AlignVCenter)
 
     def set_active(self, active: bool) -> None:
@@ -92,9 +90,6 @@ class ChannelCard(QFrame):
         self.style().polish(self)
 
     def set_summary(self, settings: ChannelSettings) -> None:
-        self.meta.setText(
-            f"{_format_waveform_name(settings.waveform)} | {_format_timing(settings)} | {_format_level_short(settings)}"
-        )
         output_on = bool(settings.output_enabled)
         self.output.setText("输出 ON" if output_on else "输出 OFF")
         self.output.setProperty("on", output_on)
@@ -117,6 +112,7 @@ class MainWindow(QMainWindow):
         self._config_path = default_config_path()
         self._startup_config = load_app_config(self._config_path, default_app_config())
         self.default_channel_settings = dict(default_app_config().channels)
+        self.default_channel_ui = {1: ChannelUiConfig(), 2: ChannelUiConfig()}
         self.clients: dict[str, RigolVisaClient] = {}
         self.device_settings: dict[str, dict[int, ChannelSettings]] = {
             address: dict(device.channels)
@@ -126,9 +122,14 @@ class MainWindow(QMainWindow):
             address: device.active_channel
             for address, device in self._startup_config.devices.items()
         }
+        self.device_ui_settings: dict[str, dict[int, ChannelUiConfig]] = {
+            address: dict(device.channel_ui) or dict(self.default_channel_ui)
+            for address, device in self._startup_config.devices.items()
+        }
         if self._startup_config.visa_address not in self.device_settings:
             self.device_settings[self._startup_config.visa_address] = dict(self._startup_config.channels)
             self.device_active_channels[self._startup_config.visa_address] = self._startup_config.active_channel
+            self.device_ui_settings[self._startup_config.visa_address] = dict(self.default_channel_ui)
         self.active_channel = self.device_active_channels.get(
             self._startup_config.visa_address,
             self._startup_config.active_channel,
@@ -142,13 +143,11 @@ class MainWindow(QMainWindow):
         self.active_device_key = ""
         self.sidebar_collapsed = False
         self.connection_rows: list[dict[str, QWidget]] = []
+        self.active_connection_row: dict[str, QWidget] | None = None
         self.available_resources: tuple[str, ...] = ()
         self.client = RigolVisaClient(log=self._log)
         self._build_ui()
         self._apply_style()
-        self._loading_form = True
-        self.address.setEditText(self._startup_config.visa_address)
-        self._loading_form = False
         self._load_settings_to_form(self.channel_settings[self.active_channel])
         self._set_connected(False, "未连接")
 
@@ -256,20 +255,27 @@ class MainWindow(QMainWindow):
         self.connection_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.connection_rows_layout.setSpacing(8)
         card_layout.addLayout(self.connection_rows_layout)
-        self._add_connection_row(self._startup_config.visa_address)
+        addresses = list(self._startup_config.visa_addresses) or [self._startup_config.visa_address]
+        for address in addresses:
+            self._add_connection_row(address)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
+        self.btn_remove_address = QPushButton("删除地址", card)
+        self.btn_remove_address.setObjectName("SecondaryButton")
+        self.btn_remove_address.setFixedSize(96, 38)
         self.btn_add_address = QPushButton("新增地址", card)
         self.btn_add_address.setObjectName("SecondaryButton")
         self.btn_add_address.setFixedSize(96, 38)
         self.btn_refresh = QPushButton("刷新地址", card)
         self.btn_refresh.setFixedSize(96, 38)
 
+        actions.addWidget(self.btn_remove_address)
         actions.addStretch(1)
         actions.addWidget(self.btn_add_address)
         actions.addWidget(self.btn_refresh)
         card_layout.addLayout(actions)
+        self._update_remove_address_state()
 
         device_list_title = QLabel("已连接信号发生器", card)
         device_list_title.setObjectName("ConnectionListTitle")
@@ -332,6 +338,7 @@ class MainWindow(QMainWindow):
             "button": connect_button,
         }
         self.connection_rows.append(row_data)
+        self.active_connection_row = row_data
         if len(self.connection_rows) == 1:
             self.address = address_box
             self.status_badge = status_wrap
@@ -339,11 +346,67 @@ class MainWindow(QMainWindow):
             self.status_text = status_text
 
         address_box.currentTextChanged.connect(self._save_config)
+        address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._set_active_connection_row(r))
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._update_connection_row_action(r))
         connect_button.clicked.connect(lambda _checked=False, r=row_data: self._toggle_connection(r))
         self.connection_rows_layout.addWidget(row_frame)
         self._set_connection_row_state(row_data, False, "未连接")
+        self._update_remove_address_state()
         return row_data
+
+    def _set_active_connection_row(self, row: dict[str, QWidget]) -> None:
+        if row in self.connection_rows:
+            self.active_connection_row = row
+
+    def _focused_connection_row(self) -> dict[str, QWidget] | None:
+        focus = QApplication.focusWidget()
+        if focus is None:
+            return None
+        for row in self.connection_rows:
+            frame = row.get("frame")
+            if isinstance(frame, QWidget) and (focus is frame or frame.isAncestorOf(focus)):
+                return row
+        return None
+
+    def _selected_connection_row_for_removal(self) -> dict[str, QWidget] | None:
+        return (
+            self._focused_connection_row()
+            or (self.active_connection_row if self.active_connection_row in self.connection_rows else None)
+            or (self.connection_rows[-1] if self.connection_rows else None)
+        )
+
+    def _remove_connection_row(self, row: dict[str, QWidget] | None = None) -> None:
+        if len(self.connection_rows) <= 1:
+            self._update_remove_address_state()
+            self._log("至少保留一个 VISA 地址，已取消删除")
+            return
+        row = row or self._selected_connection_row_for_removal()
+        if row not in self.connection_rows:
+            return
+        address = self._connection_row_address(row)
+        if address in self.clients:
+            self._disconnect(address)
+        self.connection_rows.remove(row)
+        frame = row.get("frame")
+        if frame is not None:
+            frame.setParent(None)
+            frame.deleteLater()
+        if address:
+            self.device_settings.pop(address, None)
+            self.device_active_channels.pop(address, None)
+            self.device_ui_settings.pop(address, None)
+        first = self.connection_rows[0]
+        self.address = first["address"]
+        self.status_badge = first["status_badge"]
+        self.status_dot = first["status_dot"]
+        self.status_text = first["status_text"]
+        self.active_connection_row = self.connection_rows[-1]
+        self._update_remove_address_state()
+        self._save_config()
+
+    def _update_remove_address_state(self) -> None:
+        if hasattr(self, "btn_remove_address"):
+            self.btn_remove_address.setEnabled(len(self.connection_rows) > 1)
 
     def _populate_address_combo(self, combo: QComboBox, current: str = "") -> None:
         current = current.strip() or combo.currentText().strip()
@@ -370,9 +433,20 @@ class MainWindow(QMainWindow):
     def _current_visa_address(self) -> str:
         if self.active_device_key:
             return self.active_device_key
-        if self.connection_rows:
-            return self._connection_row_address(self.connection_rows[0])
+        for address in self._connection_row_addresses():
+            return address
         return ""
+
+    def _connection_row_addresses(self) -> tuple[str, ...]:
+        seen: set[str] = set()
+        addresses: list[str] = []
+        for row in self.connection_rows:
+            address = self._connection_row_address(row)
+            if not address or address in seen:
+                continue
+            seen.add(address)
+            addresses.append(address)
+        return tuple(addresses)
 
     def _row_for_address(self, address: str) -> dict[str, QWidget] | None:
         address = address.strip()
@@ -791,6 +865,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.sidebar_toggle.clicked.connect(self._toggle_sidebar)
         self.nav_connect.clicked.connect(self._show_connection_page)
+        self.btn_remove_address.clicked.connect(lambda: self._remove_connection_row())
         self.btn_add_address.clicked.connect(lambda: self._add_connection_row(""))
         self.btn_refresh.clicked.connect(self._refresh_resources)
         self.btn_log.clicked.connect(self._show_log_window)
@@ -868,6 +943,7 @@ class MainWindow(QMainWindow):
         if address not in self.device_settings:
             self.device_settings[address] = dict(self.default_channel_settings)
             self.device_active_channels[address] = 1
+            self.device_ui_settings[address] = dict(self.default_channel_ui)
         label = self._device_label(idn, len(self.device_labels) + 1)
         self.device_labels[address] = label
         self.device_idns[address] = idn
@@ -907,12 +983,13 @@ class MainWindow(QMainWindow):
         if client is None:
             return
         if self.active_device_key:
-            self.device_settings[self.active_device_key] = dict(self.channel_settings)
-            self.device_active_channels[self.active_device_key] = self.active_channel
+            self._save_active_settings()
         self.active_device_key = address
         self.client = client
         if address not in self.device_settings:
             self.device_settings[address] = dict(self.default_channel_settings)
+        if address not in self.device_ui_settings:
+            self.device_ui_settings[address] = dict(self.default_channel_ui)
         self.channel_settings = dict(self.device_settings[address])
         self.active_channel = self.device_active_channels.get(address, 1)
         row = self._row_for_address(address)
@@ -1040,19 +1117,30 @@ class MainWindow(QMainWindow):
         if self.active_device_key:
             self.device_settings[self.active_device_key] = dict(self.channel_settings)
             self.device_active_channels[self.active_device_key] = self.active_channel
+            channel_ui = self.device_ui_settings.setdefault(self.active_device_key, dict(self.default_channel_ui))
+            channel_ui[self.active_channel] = ChannelUiConfig(
+                frequency_unit=self._frequency_display_unit,
+                period_unit=self._period_display_unit,
+            )
 
     def _save_config(self) -> None:
         if self._loading_form or not hasattr(self, "address"):
             return
         self._save_active_settings()
+        visa_addresses = self._connection_row_addresses()
+        primary_address = self._current_visa_address() or (
+            visa_addresses[0] if visa_addresses else self._startup_config.visa_address
+        )
         config = AppConfig(
             active_channel=self.active_channel,
-            visa_address=self._current_visa_address(),
+            visa_address=primary_address,
+            visa_addresses=visa_addresses,
             channels=dict(self.channel_settings),
             devices={
                 address: DeviceConfig(
                     active_channel=self.device_active_channels.get(address, 1),
                     channels=dict(channels),
+                    channel_ui=dict(self.device_ui_settings.get(address, self.default_channel_ui)),
                 )
                 for address, channels in self.device_settings.items()
             },
@@ -1170,8 +1258,18 @@ class MainWindow(QMainWindow):
         self.active_channel = settings.channel
         self._set_waveform_button(settings.waveform)
         _set_combo_data(self.frequency_mode, settings.frequency_mode)
-        frequency_unit = self._preferred_frequency_unit(settings.frequency_hz)
-        period_unit = self._preferred_period_unit(settings.period_s)
+        ui_key = self.active_device_key or self._current_visa_address() or self._startup_config.visa_address
+        saved_ui = self.device_ui_settings.get(ui_key, {}).get(settings.channel)
+        frequency_unit = (
+            saved_ui.frequency_unit
+            if isinstance(saved_ui, ChannelUiConfig)
+            else self._preferred_frequency_unit(settings.frequency_hz)
+        )
+        period_unit = (
+            saved_ui.period_unit
+            if isinstance(saved_ui, ChannelUiConfig)
+            else self._preferred_period_unit(settings.period_s)
+        )
         self._frequency_display_unit = frequency_unit
         self._period_display_unit = period_unit
         _set_combo_data(self.frequency_unit, frequency_unit, silent=True)
@@ -1401,6 +1499,7 @@ class MainWindow(QMainWindow):
         row = row or (self.connection_rows[0] if self.connection_rows else None)
         if row is None:
             return
+        self._set_active_connection_row(row)
         current = self._connection_row_address(row)
         if current in self.clients:
             self._disconnect(current)
@@ -1612,10 +1711,10 @@ def _spin_editor(spin: QDoubleSpinBox | QSpinBox, unit: QComboBox | None = None)
     btn_up.clicked.connect(lambda: spin.setValue(spin.value() + spin.singleStep()))
     btn_down.clicked.connect(lambda: spin.setValue(spin.value() - spin.singleStep()))
 
-    layout.addWidget(btn_up)
-    layout.addWidget(btn_down)
     if unit is not None:
         layout.addWidget(unit)
+    layout.addWidget(btn_up)
+    layout.addWidget(btn_down)
     return editor
 
 
@@ -2116,6 +2215,44 @@ QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
 QComboBox::drop-down {
     border: none;
     width: 22px;
+}
+QComboBox QAbstractItemView {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+    color: #22354c;
+    selection-background-color: #e9f4ff;
+    selection-color: #0f2f4d;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 24px;
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+QComboBox QAbstractItemView::item:hover {
+    background: #f2f7fc;
+}
+QListView {
+    background: #ffffff;
+    border: 1px solid #d4dfeb;
+    border-radius: 8px;
+    outline: 0;
+    padding: 4px;
+    color: #22354c;
+    selection-background-color: #e9f4ff;
+    selection-color: #0f2f4d;
+}
+QListView::item {
+    min-height: 24px;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 6px;
+}
+QListView::item:selected, QListView::item:hover {
+    background: #e9f4ff;
+    color: #0f2f4d;
 }
 QFrame#RightPanel QComboBox, QFrame#RightPanel QDoubleSpinBox, QFrame#RightPanel QSpinBox {
     min-height: 22px;

@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 
 from rigol_dg1022z.config import (
     AppConfig,
+    ChannelUiConfig,
     DeviceConfig,
     default_app_config,
     load_app_config,
@@ -67,6 +68,10 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig(
                 active_channel=1,
                 visa_address="TCPIP::192.168.1.191::INSTR",
+                visa_addresses=(
+                    "TCPIP::192.168.1.191::INSTR",
+                    "TCPIP::192.168.1.192::INSTR",
+                ),
                 channels={
                     1: ChannelSettings(channel=1, waveform="SIN", frequency_hz=1000.0),
                     2: ChannelSettings(channel=2, waveform="SQU", frequency_hz=2000.0),
@@ -77,6 +82,10 @@ class ConfigTests(unittest.TestCase):
                         channels={
                             1: ChannelSettings(channel=1, waveform="SIN", frequency_hz=1111.0),
                             2: ChannelSettings(channel=2, waveform="SQU", frequency_hz=2222.0),
+                        },
+                        channel_ui={
+                            1: ChannelUiConfig(frequency_unit="MHz", period_unit="s"),
+                            2: ChannelUiConfig(frequency_unit="Hz", period_unit="ms"),
                         },
                     ),
                     "TCPIP::192.168.1.192::INSTR": DeviceConfig(
@@ -92,11 +101,20 @@ class ConfigTests(unittest.TestCase):
             save_app_config(config, path)
             loaded = load_app_config(path, default_app_config())
 
+            self.assertEqual(
+                loaded.visa_addresses,
+                (
+                    "TCPIP::192.168.1.191::INSTR",
+                    "TCPIP::192.168.1.192::INSTR",
+                ),
+            )
             first = loaded.devices["TCPIP::192.168.1.191::INSTR"]
             second = loaded.devices["TCPIP::192.168.1.192::INSTR"]
             self.assertEqual(first.active_channel, 1)
             self.assertEqual(first.channels[1].frequency_hz, 1111.0)
             self.assertEqual(first.channels[2].frequency_hz, 2222.0)
+            self.assertEqual(first.channel_ui[1].frequency_unit, "MHz")
+            self.assertEqual(first.channel_ui[1].period_unit, "s")
             self.assertEqual(second.active_channel, 2)
             self.assertEqual(second.channels[1].waveform, "RAMP")
             self.assertEqual(second.channels[2].frequency_hz, 4444.0)
