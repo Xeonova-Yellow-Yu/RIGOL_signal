@@ -16,6 +16,7 @@ from rigol_dg1022z.scpi import (
     build_channel_apply_commands,
     build_fire_burst_command,
     build_output_command,
+    build_phase_align_command,
 )
 
 
@@ -46,12 +47,17 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR1:FREQ 1000", commands)
         self.assertIn(":SOUR1:VOLT:HIGH 3.3", commands)
         self.assertIn(":SOUR1:VOLT:LOW 0", commands)
-        self.assertIn(":SOUR1:PHAS 45", commands)
-        self.assertIn(":SOUR1:PHAS:INIT", commands)
+        self.assertIn(":SOUR1:PHAS:ADJ 45", commands)
+        self.assertNotIn(":SOUR1:PHAS:INIT", commands)
         self.assertIn(":SOUR1:FUNC:SQU:DCYC 25", commands)
         self.assertIn(":SOUR1:BURS:NCYC 3", commands)
         self.assertIn(":SOUR1:BURS:TRIG:SOUR MAN", commands)
         self.assertEqual(commands[-2:], [":OUTP1:LOAD 50", ":OUTP1:STAT ON"])
+        phase_idx = commands.index(":SOUR1:PHAS:ADJ 45")
+        burs_on_idx = commands.index(":SOUR1:BURS:STAT ON")
+        load_idx = commands.index(":OUTP1:LOAD 50")
+        self.assertLess(burs_on_idx, phase_idx)
+        self.assertLess(phase_idx, load_idx)
 
     def test_pulse_period_and_width_commands(self) -> None:
         settings = ChannelSettings(
@@ -69,8 +75,14 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR2:PER 0.002", commands)
         self.assertIn(":SOUR2:PULS:WIDT 0.0005", commands)
         self.assertIn(":SOUR2:PULS:DCYC 50", commands)
-        self.assertIn(":SOUR2:PHAS:SYNC", commands)
+        self.assertIn(":SOUR2:PHAS:ADJ 0", commands)
+        self.assertNotIn(":SOUR2:PHAS:SYNC", commands)
         self.assertEqual(commands[-1], ":OUTP2:STAT OFF")
+        phase_idx = commands.index(":SOUR2:PHAS:ADJ 0")
+        burs_off_idx = commands.index(":SOUR2:BURS:STAT OFF")
+        load_idx = commands.index(":OUTP2:LOAD INF")
+        self.assertLess(burs_off_idx, phase_idx)
+        self.assertLess(phase_idx, load_idx)
 
     def test_gated_burst_requires_external_trigger(self) -> None:
         settings = ChannelSettings(
@@ -94,6 +106,7 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertEqual(commands[0], ":SOUR1:FUNC DC")
         self.assertIn(":SOUR1:VOLT:OFFS 1.25", commands)
         self.assertNotIn(":SOUR1:FREQ 1000", commands)
+        self.assertNotIn(":SOUR1:PHAS:ADJ 90", commands)
         self.assertNotIn(":SOUR1:PHAS 90", commands)
 
     def test_dc_rejects_high_low_mode(self) -> None:
@@ -122,6 +135,13 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertEqual(build_fire_burst_command(2), ":SOUR2:BURS:TRIG")
         with self.assertRaises(ValueError):
             build_output_command(3, True)
+
+    def test_phase_align_commands(self) -> None:
+        self.assertEqual(build_phase_align_command(), ":SOUR:PHAS:INIT")
+        self.assertEqual(build_phase_align_command(1), ":SOUR1:PHAS:INIT")
+        self.assertEqual(build_phase_align_command(2), ":SOUR2:PHAS:SYNC")
+        with self.assertRaises(ValueError):
+            build_phase_align_command(3)
 
     def test_phase_rejects_negative_value(self) -> None:
         settings = ChannelSettings(phase_deg=-90.0)

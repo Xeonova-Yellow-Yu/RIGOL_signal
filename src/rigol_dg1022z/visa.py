@@ -11,6 +11,7 @@ from .scpi import (
     build_fire_burst_command,
     build_output_command,
     build_phase_align_command,
+    normalize_waveform,
 )
 
 
@@ -106,6 +107,13 @@ class RigolVisaClient:
         commands = build_channel_apply_commands(settings)
         self._log(f"SCPI 下发 CH{settings.channel}: {len(commands)} 条")
         self.write_many(commands)
+        waveform = normalize_waveform(settings.waveform)
+        if waveform not in {"DC", "NOIS"}:
+            try:
+                reply = self.query(f":SOUR{settings.channel}:PHAS?").strip()
+                self._log(f"CH{settings.channel} 仪器相位读回: {reply}")
+            except Exception as exc:
+                self._log(f"CH{settings.channel} 相位读回失败: {exc}")
         return commands
 
     def set_output(self, channel: int, enabled: bool) -> str:

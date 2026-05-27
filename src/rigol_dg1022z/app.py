@@ -80,8 +80,14 @@ QListView#ComboPopupView::item:selected {
 """
 
 CONNECTION_CONTENT_WIDTH = 430
-CONNECTION_ROW_HEIGHT = 58
-CONNECTION_ADDRESS_WIDTH = 220
+CONNECTION_CONTROL_HEIGHT = 36
+CONNECTION_BUTTON_WIDTH = 96
+CONNECTION_ROW_LABEL_WIDTH = 112
+CONNECTION_ADDRESS_MIN_WIDTH = 180
+WORK_TOOLBAR_LABEL_WIDTH = 36
+WORK_TOOLBAR_ROW_HEIGHT = 40
+WORK_TOOLBAR_ROW_SPACING = 10
+WORK_TOOLBAR_CONTROL_HEIGHT = 36
 UNIT_SLOT_WIDTH = 62
 UNIT_SEP_WIDTH = 1
 UNIT_COLUMN_WIDTH = UNIT_SEP_WIDTH + UNIT_SLOT_WIDTH
@@ -190,13 +196,12 @@ class ChannelCard(QFrame):
         self.channel = channel
         self.setObjectName("ChannelCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(40)
-        self.setMinimumWidth(120)
-        self.setMaximumWidth(16777215)
+        self.setFixedHeight(WORK_TOOLBAR_CONTROL_HEIGHT)
+        self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 5, 8, 5)
+        layout.setContentsMargins(10, 4, 8, 4)
         layout.setSpacing(8)
 
         self.title = QLabel(f"CH{channel}")
@@ -378,110 +383,108 @@ class MainWindow(QMainWindow):
         title_block.addWidget(subtitle)
         card_layout.addLayout(title_block)
 
-        self.connection_rows_layout = QVBoxLayout()
-        self.connection_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.connection_rows_layout.setSpacing(8)
-        card_layout.addLayout(self.connection_rows_layout)
+        grid_host = QWidget(card)
+        grid_host.setObjectName("ConnectionGridHost")
+        grid_host.setAttribute(Qt.WA_StyledBackground, True)
+        grid_host.setFixedWidth(CONNECTION_CONTENT_WIDTH)
+        self.connection_grid_host = grid_host
+        self.connection_address_grid = QGridLayout(grid_host)
+        self.connection_address_grid.setContentsMargins(0, 0, 0, 0)
+        self.connection_address_grid.setHorizontalSpacing(8)
+        self.connection_address_grid.setVerticalSpacing(8)
+        self.connection_address_grid.setColumnMinimumWidth(0, CONNECTION_ROW_LABEL_WIDTH)
+        self.connection_address_grid.setColumnStretch(0, 0)
+        self.connection_address_grid.setColumnStretch(1, 1)
+        self.connection_address_grid.setColumnMinimumWidth(2, CONNECTION_BUTTON_WIDTH)
+        self.connection_address_grid.setColumnStretch(2, 0)
+
+        self.btn_remove_address = QPushButton("删除地址", grid_host)
+        self.btn_remove_address.setObjectName("SecondaryButton")
+        self.btn_remove_address.setFixedSize(CONNECTION_BUTTON_WIDTH, CONNECTION_CONTROL_HEIGHT)
+        self.btn_add_address = QPushButton("新增地址", grid_host)
+        self.btn_add_address.setObjectName("SecondaryButton")
+        self.btn_add_address.setFixedSize(CONNECTION_BUTTON_WIDTH, CONNECTION_CONTROL_HEIGHT)
+
         addresses = list(self._startup_config.visa_addresses) or [self._startup_config.visa_address]
         for address in addresses:
             self._add_connection_row(address)
-
-        actions_frame = QFrame(card)
-        actions_frame.setObjectName("ConnectionActionsRow")
-        actions_frame.setFixedWidth(CONNECTION_CONTENT_WIDTH)
-        actions = QHBoxLayout(actions_frame)
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(8)
-        self.btn_remove_address = QPushButton("删除地址", card)
-        self.btn_remove_address.setObjectName("SecondaryButton")
-        self.btn_remove_address.setFixedSize(96, 38)
-        self.btn_add_address = QPushButton("新增地址", card)
-        self.btn_add_address.setObjectName("SecondaryButton")
-        self.btn_add_address.setFixedSize(96, 38)
-        self.btn_refresh = QPushButton("刷新地址", card)
-        self.btn_refresh.setFixedSize(96, 38)
-
-        actions.addWidget(self.btn_remove_address)
-        actions.addStretch(1)
-        actions.addWidget(self.btn_add_address)
-        actions.addWidget(self.btn_refresh)
-        card_layout.addWidget(actions_frame, 0, Qt.AlignLeft)
+        card_layout.addWidget(grid_host, 0, Qt.AlignLeft)
         self._update_remove_address_state()
-
-        device_list_title = QLabel("已连接信号发生器", card)
-        device_list_title.setObjectName("ConnectionListTitle")
-        card_layout.addWidget(device_list_title)
-        self.device_list_layout = QVBoxLayout()
-        self.device_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.device_list_layout.setSpacing(8)
-        card_layout.addLayout(self.device_list_layout)
 
         layout.addStretch(1)
         layout.addWidget(card, 0, Qt.AlignHCenter)
         layout.addStretch(2)
-        self._refresh_device_list()
         return page
 
-    def _add_connection_row(self, address: str = "") -> dict[str, QWidget]:
-        row_frame = QFrame(self.connection_panel)
-        row_frame.setObjectName("ConnectionDeviceRow")
-        row_frame.setFixedSize(CONNECTION_CONTENT_WIDTH, CONNECTION_ROW_HEIGHT)
-        row = QHBoxLayout(row_frame)
-        row.setContentsMargins(8, 7, 8, 7)
-        row.setSpacing(8)
+    def _clear_connection_grid(self) -> None:
+        while self.connection_address_grid.count():
+            self.connection_address_grid.takeAt(0)
 
-        address_box = CleanComboBox(row_frame)
+    def _place_connection_action_row(self) -> None:
+        row = len(self.connection_rows)
+        self.connection_address_grid.addWidget(
+            self.btn_remove_address, row, 1, Qt.AlignRight | Qt.AlignVCenter
+        )
+        self.connection_address_grid.addWidget(
+            self.btn_add_address, row, 2, Qt.AlignVCenter
+        )
+        self.connection_address_grid.setRowMinimumHeight(row, CONNECTION_CONTROL_HEIGHT)
+
+    def _rebuild_connection_grid(self) -> None:
+        self._clear_connection_grid()
+        for index, row_data in enumerate(self.connection_rows):
+            row_data["grid_row"] = index
+            self.connection_address_grid.addWidget(
+                row_data["row_label"], index, 0, Qt.AlignVCenter
+            )
+            self.connection_address_grid.addWidget(row_data["address"], index, 1)
+            self.connection_address_grid.addWidget(
+                row_data["button"], index, 2, Qt.AlignVCenter
+            )
+            self.connection_address_grid.setRowMinimumHeight(index, CONNECTION_CONTROL_HEIGHT)
+        self._place_connection_action_row()
+
+    def _add_connection_row(self, address: str = "") -> dict[str, QWidget]:
+        parent = self.connection_grid_host
+
+        address_box = CleanComboBox(parent)
         address_box.setEditable(True)
-        address_box.setFixedSize(CONNECTION_ADDRESS_WIDTH, 36)
+        address_box.setMinimumWidth(CONNECTION_ADDRESS_MIN_WIDTH)
+        address_box.setFixedHeight(CONNECTION_CONTROL_HEIGHT)
+        address_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         _prepare_combo_popup(address_box)
         if address_box.lineEdit() is not None:
             address_box.lineEdit().setPlaceholderText("输入 VISA 地址")
         self._populate_address_combo(address_box, address)
 
-        status_wrap = QFrame(row_frame)
-        status_wrap.setObjectName("ConnectionStatusBadge")
-        status_layout = QHBoxLayout(status_wrap)
-        status_layout.setContentsMargins(9, 0, 9, 0)
-        status_layout.setSpacing(5)
-        status_dot = QLabel(status_wrap)
-        status_dot.setObjectName("StatusDot")
-        status_dot.setFixedSize(10, 10)
-        status_text = QLabel("未连接", status_wrap)
-        status_text.setObjectName("StatusText")
-        status_layout.addWidget(status_dot)
-        status_layout.addWidget(status_text)
-        status_wrap.setFixedSize(86, 36)
+        row_label = QLabel(parent)
+        row_label.setObjectName("ConnectionRowLabel")
+        row_label.setFixedSize(CONNECTION_ROW_LABEL_WIDTH, CONNECTION_CONTROL_HEIGHT)
+        row_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
-        connect_button = QPushButton("连接", row_frame)
+        connect_button = QPushButton("连接", parent)
         connect_button.setObjectName("ConnectionButton")
-        connect_button.setFixedSize(76, 36)
-
-        row.addWidget(address_box)
-        row.addWidget(status_wrap)
-        row.addWidget(connect_button)
-        row.addStretch(1)
+        connect_button.setFixedSize(CONNECTION_BUTTON_WIDTH, CONNECTION_CONTROL_HEIGHT)
 
         row_data: dict[str, QWidget] = {
-            "frame": row_frame,
+            "grid_row": len(self.connection_rows),
+            "row_label": row_label,
             "address": address_box,
-            "status_badge": status_wrap,
-            "status_dot": status_dot,
-            "status_text": status_text,
             "button": connect_button,
         }
+        row_data["_status_display"] = "未连接"
+        row_data["_connected"] = False
+        row_data["_failed"] = False
         self.connection_rows.append(row_data)
         self.active_connection_row = row_data
         if len(self.connection_rows) == 1:
             self.address = address_box
-            self.status_badge = status_wrap
-            self.status_dot = status_dot
-            self.status_text = status_text
 
         address_box.currentTextChanged.connect(self._save_config)
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._set_active_connection_row(r))
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._update_connection_row_action(r))
         connect_button.clicked.connect(lambda _checked=False, r=row_data: self._toggle_connection(r))
-        self.connection_rows_layout.addWidget(row_frame, 0, Qt.AlignLeft)
+        self._rebuild_connection_grid()
         self._set_connection_row_state(row_data, False, "未连接")
         self._update_remove_address_state()
         return row_data
@@ -495,9 +498,12 @@ class MainWindow(QMainWindow):
         if focus is None:
             return None
         for row in self.connection_rows:
-            frame = row.get("frame")
-            if isinstance(frame, QWidget) and (focus is frame or frame.isAncestorOf(focus)):
-                return row
+            for key in ("address", "row_label", "button"):
+                widget = row.get(key)
+                if isinstance(widget, QWidget) and (
+                    focus is widget or widget.isAncestorOf(focus)
+                ):
+                    return row
         return None
 
     def _selected_connection_row_for_removal(self) -> dict[str, QWidget] | None:
@@ -519,20 +525,19 @@ class MainWindow(QMainWindow):
         if address in self.clients:
             self._disconnect(address)
         self.connection_rows.remove(row)
-        frame = row.get("frame")
-        if frame is not None:
-            frame.setParent(None)
-            frame.deleteLater()
+        for key in ("address", "row_label", "button"):
+            widget = row.get(key)
+            if widget is not None:
+                widget.deleteLater()
         if address:
             self.device_settings.pop(address, None)
             self.device_active_channels.pop(address, None)
             self.device_ui_settings.pop(address, None)
         first = self.connection_rows[0]
         self.address = first["address"]
-        self.status_badge = first["status_badge"]
-        self.status_dot = first["status_dot"]
-        self.status_text = first["status_text"]
         self.active_connection_row = self.connection_rows[-1]
+        self._rebuild_connection_grid()
+        self._renumber_connection_row_labels()
         self._update_remove_address_state()
         self._save_config()
 
@@ -589,6 +594,27 @@ class MainWindow(QMainWindow):
                 return row
         return None
 
+    def _connection_row_device_name(self, row: dict[str, QWidget]) -> str:
+        try:
+            index = self.connection_rows.index(row) + 1
+        except ValueError:
+            return "设备1"
+        return f"设备{index}"
+
+    def _update_connection_row_label(self, row: dict[str, QWidget]) -> None:
+        label = row.get("row_label")
+        if not isinstance(label, QLabel):
+            return
+        display = str(row.get("_status_display", "未连接"))
+        label.setText(f"{self._connection_row_device_name(row)}：{display}")
+        label.setProperty("connected", bool(row.get("_connected", False)))
+        label.setProperty("failed", bool(row.get("_failed", False)))
+        _repolish(label)
+
+    def _renumber_connection_row_labels(self) -> None:
+        for row in self.connection_rows:
+            self._update_connection_row_label(row)
+
     def _set_connection_row_state(
         self,
         row: dict[str, QWidget],
@@ -597,20 +623,15 @@ class MainWindow(QMainWindow):
         *,
         failed: bool = False,
     ) -> None:
-        badge = row.get("status_badge")
-        dot = row.get("status_dot")
-        label = row.get("status_text")
+        display = "已连接" if connected else text
+        row["_status_display"] = display
+        row["_connected"] = connected
+        row["_failed"] = failed
+        self._update_connection_row_label(row)
         button = row.get("button")
         address = row.get("address")
-        display = "已连接" if connected else text
-        for widget in (badge, dot, label):
-            if widget is None:
-                continue
-            widget.setProperty("connected", connected)
-            widget.setProperty("failed", failed)
-            _repolish(widget)
+        label = row.get("row_label")
         if isinstance(label, QLabel):
-            label.setText(display)
             label.setToolTip(text)
         if isinstance(button, QPushButton):
             button.setText("断开" if connected else "连接")
@@ -692,68 +713,62 @@ class MainWindow(QMainWindow):
         left = QWidget(toolbar)
         left.setObjectName("WorkToolbarLeft")
         left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        left_layout = QVBoxLayout(left)
+        left_layout = QGridLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
+        left_layout.setHorizontalSpacing(WORK_TOOLBAR_ROW_SPACING)
+        left_layout.setVerticalSpacing(8)
+        left_layout.setColumnMinimumWidth(0, WORK_TOOLBAR_LABEL_WIDTH)
+        left_layout.setColumnStretch(0, 0)
+        left_layout.setColumnStretch(1, 1)
+        left_layout.setRowMinimumHeight(0, WORK_TOOLBAR_ROW_HEIGHT)
+        left_layout.setRowMinimumHeight(1, WORK_TOOLBAR_ROW_HEIGHT)
 
-        channel_area = QWidget(left)
-        channel_area.setObjectName("StripRow")
-        channel_area.setFixedHeight(40)
-        channel_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        channel_layout = QHBoxLayout(channel_area)
-        channel_layout.setContentsMargins(0, 0, 0, 0)
-        channel_layout.setSpacing(8)
-        channel_label = QLabel("通道", channel_area)
-        channel_label.setObjectName("StripRowLabel")
-        channel_label.setFixedWidth(36)
-        channel_layout.addWidget(channel_label, 0, Qt.AlignVCenter)
+        def _strip_row_label(text: str) -> QLabel:
+            label = QLabel(text, left)
+            label.setObjectName("StripRowLabel")
+            label.setFixedSize(WORK_TOOLBAR_LABEL_WIDTH, WORK_TOOLBAR_ROW_HEIGHT)
+            label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            return label
+
+        channel_label = _strip_row_label("通道")
+        action_label = _strip_row_label("操作")
+        channel_row_host = QWidget(left)
+        channel_row_host.setObjectName("WorkToolbarChannelRow")
+        channel_row_layout = QHBoxLayout(channel_row_host)
+        channel_row_layout.setContentsMargins(0, 0, 0, 0)
+        channel_row_layout.setSpacing(WORK_TOOLBAR_ROW_SPACING)
         self.channel_cards = {
-            1: ChannelCard(1, left),
-            2: ChannelCard(2, left),
+            1: ChannelCard(1, channel_row_host),
+            2: ChannelCard(2, channel_row_host),
         }
-        for card in self.channel_cards.values():
-            channel_layout.addWidget(card, 1)
+        channel_row_layout.addWidget(self.channel_cards[1], 1)
+        channel_row_layout.addWidget(self.channel_cards[2], 1)
 
-        actions = QFrame(left)
-        actions.setObjectName("ActionGrid")
-        actions.setFixedHeight(40)
-        actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(10)
-        action_label = QLabel("操作", actions)
-        action_label.setObjectName("StripRowLabel")
-        action_label.setFixedWidth(36)
-        self.btn_apply = QPushButton("应用当前通道", actions)
+        action_row_host = QWidget(left)
+        action_row_host.setObjectName("WorkToolbarActionRow")
+        action_row_layout = QHBoxLayout(action_row_host)
+        action_row_layout.setContentsMargins(0, 0, 0, 0)
+        action_row_layout.setSpacing(WORK_TOOLBAR_ROW_SPACING)
+        self.btn_apply = QPushButton("应用当前通道", action_row_host)
         self.btn_apply.setObjectName("PrimaryButton")
-        self.btn_apply_all = QPushButton("应用双通道", actions)
-        self.btn_output_toggle = QPushButton("输出 OFF", actions)
+        self.btn_apply_all = QPushButton("应用双通道", action_row_host)
+        self.btn_output_toggle = QPushButton("输出 OFF", action_row_host)
         self.btn_output_toggle.setObjectName("OutputToggleButton")
-        self.btn_fire = QPushButton("软件触发 Burst", actions)
+        self.btn_fire = QPushButton("软件触发 Burst", action_row_host)
         for button in (
             self.btn_apply,
             self.btn_apply_all,
             self.btn_output_toggle,
             self.btn_fire,
         ):
-            button.setFixedHeight(36)
+            button.setFixedHeight(WORK_TOOLBAR_CONTROL_HEIGHT)
             button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_apply.setMinimumWidth(106)
-        self.btn_apply.setMaximumWidth(126)
-        self.btn_apply_all.setMinimumWidth(94)
-        self.btn_apply_all.setMaximumWidth(112)
-        self.btn_output_toggle.setMinimumWidth(82)
-        self.btn_output_toggle.setMaximumWidth(96)
-        self.btn_fire.setMinimumWidth(104)
-        self.btn_fire.setMaximumWidth(126)
-        actions_layout.addWidget(action_label, 0, Qt.AlignVCenter)
-        actions_layout.addWidget(self.btn_apply)
-        actions_layout.addWidget(self.btn_apply_all)
-        actions_layout.addWidget(self.btn_output_toggle)
-        actions_layout.addWidget(self.btn_fire)
+            action_row_layout.addWidget(button, 1)
 
-        left_layout.addWidget(channel_area)
-        left_layout.addWidget(actions)
+        left_layout.addWidget(channel_label, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
+        left_layout.addWidget(channel_row_host, 0, 1)
+        left_layout.addWidget(action_label, 1, 0, Qt.AlignRight | Qt.AlignVCenter)
+        left_layout.addWidget(action_row_host, 1, 1)
 
         divider = QFrame(toolbar)
         divider.setObjectName("ToolbarDivider")
@@ -996,7 +1011,6 @@ class MainWindow(QMainWindow):
         self.nav_connect.clicked.connect(self._show_connection_page)
         self.btn_remove_address.clicked.connect(lambda: self._remove_connection_row())
         self.btn_add_address.clicked.connect(lambda: self._add_connection_row(""))
-        self.btn_refresh.clicked.connect(self._refresh_resources)
         self.btn_log.clicked.connect(self._show_log_window)
         self.btn_clear_log.clicked.connect(self.log.clear)
         self.btn_close_log.clicked.connect(self.log_window.hide)
@@ -1086,7 +1100,6 @@ class MainWindow(QMainWindow):
         else:
             self.device_nav_buttons[address].setProperty("fullText", label)
             self.device_nav_buttons[address].setText(self._device_nav_text(address, self.sidebar_collapsed))
-        self._refresh_device_list()
 
     def _device_label(self, idn: str, number: int) -> str:
         idn_upper = idn.upper()
@@ -1107,7 +1120,7 @@ class MainWindow(QMainWindow):
         number = "".join(ch for ch in label if ch.isdigit())[-1:] or str(len(self.device_nav_buttons) + 1)
         return f"DG{number}"
 
-    def _select_device(self, address: str) -> None:
+    def _select_device(self, address: str, *, navigate: bool = True) -> None:
         client = self.clients.get(address)
         if client is None:
             return
@@ -1128,63 +1141,16 @@ class MainWindow(QMainWindow):
         if self.active_channel not in self.channel_settings:
             self.active_channel = 1
         self._load_settings_to_form(self.channel_settings[self.active_channel])
-        self.pages.setCurrentWidget(self.control_page)
-        self._set_nav_checked(self.device_nav_buttons.get(address))
+        if navigate:
+            self.pages.setCurrentWidget(self.control_page)
+            self._set_nav_checked(self.device_nav_buttons.get(address))
+        else:
+            self._set_nav_checked(self.nav_connect)
         idn = self.device_idns.get(address, address)
         self._set_connected(True, idn)
         self._save_config()
-        self._log(f"切换到 {self.device_labels.get(address, '设备')}: {address}")
-
-    def _refresh_device_list(self) -> None:
-        if not hasattr(self, "device_list_layout"):
-            return
-        while self.device_list_layout.count():
-            item = self.device_list_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        if not self.clients:
-            empty = QLabel("暂无已连接信号发生器，请在上方输入或刷新 VISA 地址后连接。")
-            empty.setObjectName("EmptyState")
-            empty.setFixedWidth(CONNECTION_CONTENT_WIDTH)
-            empty.setWordWrap(True)
-            self.device_list_layout.addWidget(empty, 0, Qt.AlignLeft)
-            return
-
-        for address in self.clients:
-            card = QFrame()
-            card.setObjectName("DeviceListCard")
-            card.setFixedWidth(CONNECTION_CONTENT_WIDTH)
-            card.setFixedHeight(74)
-            card_layout = QHBoxLayout(card)
-            card_layout.setContentsMargins(14, 10, 14, 10)
-            card_layout.setSpacing(12)
-
-            text = QVBoxLayout()
-            text.setContentsMargins(0, 0, 0, 0)
-            text.setSpacing(4)
-            title = QLabel(self.device_labels.get(address, "信号发生器"), card)
-            title.setObjectName("DeviceTitle")
-            meta = QLabel(address, card)
-            meta.setObjectName("DeviceMeta")
-            text.addWidget(title)
-            text.addWidget(meta)
-
-            state = QLabel("已连接", card)
-            state.setObjectName("ConnectedPill")
-            state.setAlignment(Qt.AlignCenter)
-            state.setFixedSize(60, 24)
-
-            open_btn = QPushButton("打开配置", card)
-            open_btn.setObjectName("OpenDeviceButton")
-            open_btn.setFixedSize(86, 30)
-            open_btn.clicked.connect(lambda _checked=False, key=address: self._select_device(key))
-
-            card_layout.addLayout(text, 1)
-            card_layout.addWidget(state)
-            card_layout.addWidget(open_btn)
-            self.device_list_layout.addWidget(card, 0, Qt.AlignLeft)
+        if navigate:
+            self._log(f"切换到 {self.device_labels.get(address, '设备')}: {address}")
 
     def _select_channel(self, channel: int) -> None:
         if channel == self.active_channel:
@@ -1554,19 +1520,6 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(True)
 
-    def _refresh_resources(self) -> None:
-        try:
-            resources = self.client.list_resources()
-        except Exception as exc:
-            self._show_error("刷新 VISA 资源失败", exc)
-            return
-        self.available_resources = resources
-        for row in self.connection_rows:
-            address_box = row.get("address")
-            if isinstance(address_box, QComboBox) and address_box.isEnabled():
-                self._populate_address_combo(address_box)
-        self._log(f"发现 {len(resources)} 个 VISA 资源")
-
     def _connect(self, row: dict[str, QWidget] | None = None) -> None:
         row = row or (self.connection_rows[0] if self.connection_rows else None)
         if row is None:
@@ -1578,7 +1531,7 @@ class MainWindow(QMainWindow):
             return
         if address in self.clients:
             self._set_connection_row_state(row, True, "已连接")
-            self._select_device(address)
+            self._select_device(address, navigate=False)
             return
         client = RigolVisaClient(log=self._log)
         try:
@@ -1591,7 +1544,7 @@ class MainWindow(QMainWindow):
         self.clients[address] = client
         self.client = client
         self._register_device(address, result.idn)
-        self._select_device(address)
+        self._select_device(address, navigate=False)
         self._log(f"连接成功: {address} [{result.backend}] {result.idn}")
 
     def _disconnect(self, address: str | None = None) -> None:
@@ -1616,7 +1569,6 @@ class MainWindow(QMainWindow):
         row = self._row_for_address(address)
         if row is not None:
             self._set_connection_row_state(row, False, "未连接")
-        self._refresh_device_list()
         self._log(f"已断开: {address or '当前设备'}")
 
         if address == self.active_device_key and self.clients:
@@ -2178,34 +2130,31 @@ QLabel#ConnectionSubtitle {
     font-size: 13px;
     background: transparent;
 }
-QFrame#ConnectionDeviceRow {
-    background: #f7fafc;
-    border: 1px solid #dce5ef;
-    border-radius: 10px;
+QFrame#ConnectionCard QPushButton#ConnectionButton,
+QFrame#ConnectionCard QPushButton#SecondaryButton {
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0 8px;
+    font-size: 12px;
 }
-QFrame#ConnectionActionsRow {
+QFrame#ConnectionCard QComboBox {
+    min-height: 36px;
+    max-height: 36px;
+}
+QWidget#ConnectionGridHost {
     background: transparent;
-    border: none;
 }
-QFrame#ConnectionStatusBadge {
-    background: #f7fafc;
-    border: 1px solid #dce5ef;
-    border-radius: 9px;
-}
-QFrame#ConnectionStatusBadge[connected="true"] {
-    background: #e8f6ee;
-    border-color: #bfe5cf;
-}
-QFrame#ConnectionStatusBadge[failed="true"] {
-    background: #fff2f0;
-    border-color: #f2b8b5;
-}
-QLabel#ConnectionListTitle {
-    color: #0f2f4d;
-    font-size: 14px;
-    font-weight: 800;
+QLabel#ConnectionRowLabel {
+    color: #607387;
+    font-size: 12px;
+    font-weight: 700;
     background: transparent;
-    padding-top: 4px;
+}
+QLabel#ConnectionRowLabel[connected="true"] {
+    color: #2e9f61;
+}
+QLabel#ConnectionRowLabel[failed="true"] {
+    color: #c94141;
 }
 QFrame#RightPanel {
     background: #f3f7fb;
@@ -2220,6 +2169,9 @@ QFrame#WorkToolbar {
 QWidget#WorkToolbarLeft {
     background: transparent;
 }
+QWidget#WorkToolbarChannelRow, QWidget#WorkToolbarActionRow {
+    background: transparent;
+}
 QFrame#ToolbarDivider {
     background: #d4dfeb;
     border: none;
@@ -2230,17 +2182,10 @@ QFrame#ToolbarDivider {
 QWidget#WorkToolbarSummary {
     background: transparent;
 }
-QWidget#WorkToolbarLeft QWidget#StripRow {
-    background: transparent;
-    border: none;
-}
-QFrame#ActionGrid {
-    background: transparent;
-    border: none;
-}
-QFrame#ActionGrid QPushButton, QFrame#ActionGrid QComboBox {
-    min-height: 32px;
-    padding: 2px 8px;
+QWidget#WorkToolbarLeft QPushButton, QWidget#WorkToolbarLeft QComboBox {
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0 8px;
     font-size: 12px;
 }
 QFrame#BrandBlock {
@@ -2321,34 +2266,6 @@ QFrame#Card {
     border: 1px solid #dce5ef;
     border-radius: 10px;
 }
-QFrame#DeviceListCard {
-    background: #ffffff;
-    border: 1px solid #dce5ef;
-    border-radius: 10px;
-}
-QLabel#DeviceTitle {
-    color: #0f2f4d;
-    font-size: 13px;
-    font-weight: 700;
-    background: transparent;
-}
-QLabel#DeviceMeta, QLabel#EmptyState {
-    color: #607387;
-    font-size: 12px;
-    background: transparent;
-}
-QLabel#ConnectedPill {
-    background: #e8f6ee;
-    border: 1px solid #bfe5cf;
-    border-radius: 7px;
-    color: #2e9f61;
-    font-weight: 700;
-    font-size: 11px;
-}
-QPushButton#OpenDeviceButton {
-    padding: 3px 8px;
-    font-size: 11px;
-}
 QFrame#ChannelCard {
     background: #ffffff;
     border: 1px solid #dce5ef;
@@ -2363,6 +2280,7 @@ QLabel#StripRowLabel {
     font-size: 11px;
     font-weight: 700;
     background: transparent;
+    padding-right: 2px;
 }
 QLabel#ChannelCardTitle {
     color: #1879d9;

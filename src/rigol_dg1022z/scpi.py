@@ -103,9 +103,6 @@ def build_channel_apply_commands(
             ]
         )
 
-    if supports_phase:
-        commands.append(f"{src}:PHAS {_num(settings.phase_deg)}")
-
     if waveform == "SQU":
         commands.append(f"{src}:FUNC:SQU:DCYC {_num(settings.duty_percent)}")
     elif waveform == "PULS":
@@ -116,7 +113,7 @@ def build_channel_apply_commands(
 
     commands.extend(_build_burst_commands(src, settings.burst))
     if supports_phase:
-        commands.append(build_phase_align_command(ch))
+        commands.append(f"{src}:PHAS:ADJ {_num(settings.phase_deg)}")
     commands.append(f"{out}:LOAD {'INF' if settings.load == 'INF' else '50'}")
     commands.append(f"{out}:STAT {_state(settings.output_enabled)}")
     return commands
