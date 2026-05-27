@@ -11,3 +11,9 @@ def preferred_frequency_unit(frequency_hz: float) -> str:
 
 def preferred_period_unit(period_s: float) -> str:
     return "s" if abs(period_s) >= 1.0 else "ms"
+
+
+def preferred_level_voltage_unit(volts: float) -> str:
+    if 0.0 < abs(volts) < 1.0:
+        return "mV"
+    return "V"

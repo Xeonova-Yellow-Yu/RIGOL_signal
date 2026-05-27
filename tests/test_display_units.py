@@ -10,7 +10,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from rigol_dg1022z.display_units import preferred_frequency_unit, preferred_period_unit
+from rigol_dg1022z.display_units import (
+    preferred_frequency_unit,
+    preferred_level_voltage_unit,
+    preferred_period_unit,
+)
 
 
 class DisplayUnitTests(unittest.TestCase):
@@ -27,6 +31,13 @@ class DisplayUnitTests(unittest.TestCase):
         self.assertEqual(preferred_period_unit(0.999), "ms")
         self.assertEqual(preferred_period_unit(1.0), "s")
         self.assertEqual(preferred_period_unit(3.0), "s")
+
+    def test_preferred_level_voltage_unit_thresholds(self) -> None:
+        self.assertEqual(preferred_level_voltage_unit(1.0), "V")
+        self.assertEqual(preferred_level_voltage_unit(-1.0), "V")
+        self.assertEqual(preferred_level_voltage_unit(0.5), "mV")
+        self.assertEqual(preferred_level_voltage_unit(-0.25), "mV")
+        self.assertEqual(preferred_level_voltage_unit(0.0), "V")
 
 
 if __name__ == "__main__":

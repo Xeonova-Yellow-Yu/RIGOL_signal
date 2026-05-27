@@ -19,6 +19,7 @@ class ChannelUiConfig:
 
     frequency_unit: str = ""
     period_unit: str = ""
+    level_voltage_unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -234,9 +235,11 @@ def _channel_ui_from_dict(data: Any) -> dict[int, ChannelUiConfig]:
             continue
         frequency_unit = saved.get("frequency_unit", result[channel].frequency_unit)
         period_unit = saved.get("period_unit", result[channel].period_unit)
+        level_voltage_unit = saved.get("level_voltage_unit", result[channel].level_voltage_unit)
         result[channel] = ChannelUiConfig(
             frequency_unit=frequency_unit if frequency_unit in {"Hz", "kHz", "MHz", ""} else "",
             period_unit=period_unit if period_unit in {"ms", "s", ""} else "",
+            level_voltage_unit=level_voltage_unit if level_voltage_unit in {"V", "mV", ""} else "",
         )
     return result
 

@@ -137,7 +137,11 @@ class ConfigTests(unittest.TestCase):
                         "1": {"channel": 1, "waveform": "SIN", "frequency_hz": 1000.0}
                       },
                       "channel_ui": {
-                        "1": {"frequency_unit": "invalid", "period_unit": "bad"}
+                        "1": {
+                          "frequency_unit": "invalid",
+                          "period_unit": "bad",
+                          "level_voltage_unit": "bad"
+                        }
                       }
                     }
                   }
@@ -149,6 +153,7 @@ class ConfigTests(unittest.TestCase):
             ui = loaded.devices["TCPIP::192.168.1.191::INSTR"].channel_ui[1]
             self.assertEqual(ui.frequency_unit, "")
             self.assertEqual(ui.period_unit, "")
+            self.assertEqual(ui.level_voltage_unit, "")
 
     def test_missing_or_invalid_config_uses_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

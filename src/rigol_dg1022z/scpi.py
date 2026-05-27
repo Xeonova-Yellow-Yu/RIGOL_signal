@@ -86,6 +86,8 @@ def build_channel_apply_commands(
         else:
             commands.append(f"{src}:PER {_num(settings.period_s)}")
 
+    commands.append(f"{out}:LOAD {'INF' if settings.load == 'INF' else '50'}")
+
     if waveform == "DC":
         commands.append(f"{src}:VOLT:OFFS {_num(settings.offset_v)}")
     elif settings.level_mode == "high_low":
@@ -114,7 +116,6 @@ def build_channel_apply_commands(
     commands.extend(_build_burst_commands(src, settings.burst))
     if supports_phase:
         commands.append(f"{src}:PHAS:ADJ {_num(settings.phase_deg)}")
-    commands.append(f"{out}:LOAD {'INF' if settings.load == 'INF' else '50'}")
     commands.append(f"{out}:STAT {_state(settings.output_enabled)}")
     return commands
 

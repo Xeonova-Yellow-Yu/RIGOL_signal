@@ -18,6 +18,24 @@ class ValidationError(ValueError):
     """Raised when a requested instrument setting is not meaningful."""
 
 
+def load_scale_factor(previous_load: LoadMode, new_load: LoadMode) -> float:
+    if previous_load == new_load:
+        return 1.0
+    if previous_load == "INF" and new_load == "50":
+        return 0.5
+    if previous_load == "50" and new_load == "INF":
+        return 2.0
+    return 1.0
+
+
+def scale_voltage_for_load_change(
+    value: float,
+    previous_load: LoadMode,
+    new_load: LoadMode,
+) -> float:
+    return float(value) * load_scale_factor(previous_load, new_load)
+
+
 def _canonical_waveform(value: str) -> str:
     token = value.strip().upper().replace(" ", "_").replace("-", "_")
     aliases = {

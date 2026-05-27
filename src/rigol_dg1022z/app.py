@@ -44,8 +44,12 @@ from .config import (
     load_app_config,
     save_app_config,
 )
-from .display_units import preferred_frequency_unit, preferred_period_unit
-from .domain import BurstSettings, ChannelSettings
+from .display_units import (
+    preferred_frequency_unit,
+    preferred_level_voltage_unit,
+    preferred_period_unit,
+)
+from .domain import BurstSettings, ChannelSettings, LoadMode, scale_voltage_for_load_change
 from .scpi import WAVEFORM_CHOICES
 from .ui_state import (
     burst_ui_state,
@@ -88,13 +92,32 @@ WORK_TOOLBAR_LABEL_WIDTH = 36
 WORK_TOOLBAR_ROW_HEIGHT = 40
 WORK_TOOLBAR_ROW_SPACING = 10
 WORK_TOOLBAR_CONTROL_HEIGHT = 36
-UNIT_SLOT_WIDTH = 62
+RIGHT_PANEL_MIN_WIDTH = 328
+RIGHT_PANEL_MAX_WIDTH = 332
+RIGHT_PANEL_MARGIN_LEFT = 14
+RIGHT_PANEL_MARGIN_TOP = 14
+RIGHT_PANEL_MARGIN_RIGHT = 12
+RIGHT_PANEL_MARGIN_BOTTOM = 14
+PARAM_LABEL_WIDTH = 64
+PARAM_FIELD_WIDTH = 194
+PARAM_ROW_HEIGHT = 34
+PARAM_FORM_HORIZONTAL_SPACING = 8
+PARAM_FORM_VERTICAL_SPACING = 7
+PARAM_FORM_MARGIN_H = 10
+PARAM_CARD_WIDTH = (
+    PARAM_FORM_MARGIN_H * 2
+    + PARAM_LABEL_WIDTH
+    + PARAM_FORM_HORIZONTAL_SPACING
+    + PARAM_FIELD_WIDTH
+)
+UNIT_SLOT_WIDTH = 64
 UNIT_SEP_WIDTH = 1
 UNIT_COLUMN_WIDTH = UNIT_SEP_WIDTH + UNIT_SLOT_WIDTH
-UNIT_SLOT_PAD_LEFT = 10
-UNIT_SLOT_PAD_RIGHT = 14
+UNIT_SLOT_PAD_LEFT = 8
+UNIT_SLOT_PAD_RIGHT = 8
 VALID_FREQUENCY_UNITS = frozenset({"Hz", "kHz", "MHz"})
 VALID_PERIOD_UNITS = frozenset({"ms", "s"})
+VALID_LEVEL_VOLTAGE_UNITS = frozenset({"V", "mV"})
 
 
 class CleanComboBox(QComboBox):
@@ -852,12 +875,17 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         self.right_panel = panel
         panel.setObjectName("RightPanel")
-        panel.setMinimumWidth(390)
-        panel.setMaximumWidth(480)
-        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        panel.setMinimumWidth(RIGHT_PANEL_MIN_WIDTH)
+        panel.setMaximumWidth(RIGHT_PANEL_MAX_WIDTH)
+        panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(28, 18, 28, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(
+            RIGHT_PANEL_MARGIN_LEFT,
+            RIGHT_PANEL_MARGIN_TOP,
+            RIGHT_PANEL_MARGIN_RIGHT,
+            RIGHT_PANEL_MARGIN_BOTTOM,
+        )
+        layout.setSpacing(10)
 
         title = QLabel("参数设置")
         title.setObjectName("PanelTitle")
@@ -873,9 +901,11 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_body = QWidget(scroll)
         scroll_body.setObjectName("ParameterScrollBody")
+        scroll_body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         parameter_layout = QVBoxLayout(scroll_body)
-        parameter_layout.setContentsMargins(0, 0, 2, 0)
-        parameter_layout.setSpacing(14)
+        parameter_layout.setContentsMargins(0, 0, 0, 0)
+        parameter_layout.setSpacing(10)
+        parameter_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll.setWidget(scroll_body)
         layout.addWidget(scroll, 1)
 
@@ -899,15 +929,15 @@ class MainWindow(QMainWindow):
         self._frequency_display_unit = "kHz"
         self._period_display_unit = "ms"
         self.frequency_hz = _double_spin(1e-9, 25_000.0, 1.0, 6, 0.1)
-        self.period_s = _double_spin(0.00004, 1_000_000_000.0, 1.0, 6, 0.1)
+        self.period_s = _double_spin(0.00004, 1_000_000_000.0, 1.0, 3, 0.1)
         self.phase_deg = _double_spin(0.0, 360.0, 0.0, 3, 1.0)
         self.frequency_hz_editor = _spin_editor(self.frequency_hz, unit=self.frequency_unit)
         self.period_s_editor = _spin_editor(self.period_s, unit=self.period_unit)
         self.phase_deg_editor = _spin_editor(self.phase_deg, suffix="deg")
-        timing_form.addRow("输入方式", self.frequency_mode)
-        timing_form.addRow("频率", self.frequency_hz_editor)
-        timing_form.addRow("周期", self.period_s_editor)
-        timing_form.addRow("相位", self.phase_deg_editor)
+        timing_form.addRow(_param_row_label("输入方式"), self.frequency_mode)
+        timing_form.addRow(_param_row_label("频率"), self.frequency_hz_editor)
+        timing_form.addRow(_param_row_label("周期"), self.period_s_editor)
+        timing_form.addRow(_param_row_label("相位"), self.phase_deg_editor)
         parameter_layout.addWidget(self.timing_group)
 
         self.level_group = QGroupBox()
@@ -920,39 +950,51 @@ class MainWindow(QMainWindow):
         self.load.addItem("负载 High-Z", "INF")
         self.load.addItem("负载 50 ohm", "50")
         self.load.setFixedHeight(34)
-        self.amplitude_vpp = _double_spin(0.001, 20.0, 2.0, 4, 0.1)
-        self.offset_v = _double_spin(-10.0, 10.0, 0.0, 4, 0.1)
-        self.high_v = _double_spin(-10.0, 10.0, 1.0, 4, 0.1)
-        self.low_v = _double_spin(-10.0, 10.0, -1.0, 4, 0.1)
+        self.amplitude_vpp = _double_spin(0.001, 20.0, 2.0, 2, 0.1)
+        self.offset_v = _double_spin(-10.0, 10.0, 0.0, 2, 0.1)
+        self.level_voltage_unit = CleanComboBox()
+        self.level_voltage_unit.setObjectName("UnitCombo")
+        self.level_voltage_unit.addItem("V", "V")
+        self.level_voltage_unit.addItem("mV", "mV")
+        self.level_voltage_unit.setFixedWidth(UNIT_SLOT_WIDTH)
+        self.low_level_voltage_unit = CleanComboBox()
+        self.low_level_voltage_unit.setObjectName("UnitCombo")
+        self.low_level_voltage_unit.addItem("V", "V")
+        self.low_level_voltage_unit.addItem("mV", "mV")
+        self.low_level_voltage_unit.setFixedWidth(UNIT_SLOT_WIDTH)
+        self._level_voltage_display_unit = "V"
+
+        self.high_v = _double_spin(-10.0, 10.0, 1.0, 2, 0.1)
+        self.low_v = _double_spin(-10.0, 10.0, -1.0, 2, 0.1)
         self.amplitude_vpp_editor = _spin_editor(self.amplitude_vpp, suffix="Vpp")
         self.offset_v_editor = _spin_editor(self.offset_v, suffix="V")
-        self.high_v_editor = _spin_editor(self.high_v, suffix="V")
-        self.low_v_editor = _spin_editor(self.low_v, suffix="V")
-        level_form.addRow("模式", self.level_mode)
-        level_form.addRow("负载", self.load)
-        level_form.addRow("幅度", self.amplitude_vpp_editor)
-        level_form.addRow("偏置", self.offset_v_editor)
-        level_form.addRow("高电平", self.high_v_editor)
-        level_form.addRow("低电平", self.low_v_editor)
+        self.high_v_editor = _spin_editor(self.high_v, unit=self.level_voltage_unit)
+        self.low_v_editor = _spin_editor(self.low_v, unit=self.low_level_voltage_unit)
+        level_form.addRow(_param_row_label("模式"), self.level_mode)
+        level_form.addRow(_param_row_label("负载"), self.load)
+        level_form.addRow(_param_row_label("幅度"), self.amplitude_vpp_editor)
+        level_form.addRow(_param_row_label("偏置"), self.offset_v_editor)
+        level_form.addRow(_param_row_label("高电平"), self.high_v_editor)
+        level_form.addRow(_param_row_label("低电平"), self.low_v_editor)
         parameter_layout.addWidget(self.level_group)
 
         self.shape_group = QGroupBox()
         shape_form = _form_layout(self.shape_group)
         shape_form.addRow(_section_title("波形专属参数"))
-        self.duty_percent = _double_spin(0.001, 99.999, 50.0, 3, 1.0)
+        self.duty_percent = _double_spin(0.001, 99.999, 50.0, 2, 1.0)
         self.pulse_width_s = _double_spin(16e-9, 999_999.0, 0.0001, 9, 0.00001)
         self.ramp_symmetry = _double_spin(0.0, 100.0, 50.0, 3, 1.0)
         self.duty_percent_editor = _spin_editor(self.duty_percent, inline_suffix=" %")
         self.pulse_width_s_editor = _spin_editor(self.pulse_width_s, suffix="s")
         self.ramp_symmetry_editor = _spin_editor(self.ramp_symmetry, inline_suffix=" %")
-        shape_form.addRow("占空比", self.duty_percent_editor)
-        shape_form.addRow("脉宽", self.pulse_width_s_editor)
-        shape_form.addRow("斜波对称", self.ramp_symmetry_editor)
+        shape_form.addRow(_param_row_label("占空比"), self.duty_percent_editor)
+        shape_form.addRow(_param_row_label("脉宽"), self.pulse_width_s_editor)
+        shape_form.addRow(_param_row_label("斜波对称"), self.ramp_symmetry_editor)
         parameter_layout.addWidget(self.shape_group)
 
         self.burst_group = QGroupBox()
         burst_layout = QVBoxLayout(self.burst_group)
-        burst_layout.setContentsMargins(10, 8, 10, 8)
+        burst_layout.setContentsMargins(PARAM_FORM_MARGIN_H, 8, PARAM_FORM_MARGIN_H, 8)
         burst_layout.setSpacing(6)
         burst_layout.addWidget(_section_title("Burst"))
         burst_head = QHBoxLayout()
@@ -973,6 +1015,10 @@ class MainWindow(QMainWindow):
         self.burst_details = QFrame()
         self.burst_details.setObjectName("InlineDetails")
         burst_details_form = _form_layout(self.burst_details)
+        burst_details_form.setContentsMargins(0, 0, 0, 0)
+        self.burst_details.setFixedWidth(
+            PARAM_CARD_WIDTH - PARAM_FORM_MARGIN_H * 2
+        )
         self.burst_trigger_source = CleanComboBox()
         self.burst_trigger_source.addItem("手动/软件", "MAN")
         self.burst_trigger_source.addItem("内部", "INT")
@@ -982,7 +1028,7 @@ class MainWindow(QMainWindow):
         self.burst_cycles.setValue(1)
         self.burst_internal_period = _double_spin(1e-6, 1e6, 0.01, 6, 0.001)
         self.burst_phase = _double_spin(0.0, 360.0, 0.0, 3, 1.0)
-        self.burst_delay = _double_spin(0.0, 1e6, 0.0, 6, 0.001)
+        self.burst_delay = _double_spin(0.0, 1e6, 0.0, 3, 0.001)
         self.burst_gate_polarity = CleanComboBox()
         self.burst_gate_polarity.addItem("正门控", "NORM")
         self.burst_gate_polarity.addItem("反门控", "INV")
@@ -993,17 +1039,18 @@ class MainWindow(QMainWindow):
         self.burst_internal_period_editor = _spin_editor(self.burst_internal_period, suffix="s")
         self.burst_phase_editor = _spin_editor(self.burst_phase, suffix="deg")
         self.burst_delay_editor = _spin_editor(self.burst_delay, suffix="s")
-        burst_details_form.addRow("类型", self.burst_mode)
-        burst_details_form.addRow("触发源", self.burst_trigger_source)
-        burst_details_form.addRow("周期数", self.burst_cycles_editor)
-        burst_details_form.addRow("内部周期", self.burst_internal_period_editor)
-        burst_details_form.addRow("相位", self.burst_phase_editor)
-        burst_details_form.addRow("延时", self.burst_delay_editor)
-        burst_details_form.addRow("门控极性", self.burst_gate_polarity)
-        burst_details_form.addRow("外触发沿", self.burst_trigger_slope)
+        burst_details_form.addRow(_param_row_label("类型"), self.burst_mode)
+        burst_details_form.addRow(_param_row_label("触发源"), self.burst_trigger_source)
+        burst_details_form.addRow(_param_row_label("周期数"), self.burst_cycles_editor)
+        burst_details_form.addRow(_param_row_label("内部周期"), self.burst_internal_period_editor)
+        burst_details_form.addRow(_param_row_label("相位"), self.burst_phase_editor)
+        burst_details_form.addRow(_param_row_label("延时"), self.burst_delay_editor)
+        burst_details_form.addRow(_param_row_label("门控极性"), self.burst_gate_polarity)
+        burst_details_form.addRow(_param_row_label("外触发沿"), self.burst_trigger_slope)
         burst_layout.addWidget(self.burst_details)
         parameter_layout.addWidget(self.burst_group)
         parameter_layout.addStretch(1)
+        self._finalize_parameter_panel()
         return panel
 
     def _connect_signals(self) -> None:
@@ -1022,10 +1069,10 @@ class MainWindow(QMainWindow):
         for channel, card in self.channel_cards.items():
             card.selected.connect(self._select_channel)
 
+        self.load.currentIndexChanged.connect(self._on_load_changed)
         for widget in (
             self.frequency_mode,
             self.level_mode,
-            self.load,
             self.burst_mode,
             self.burst_trigger_source,
             self.burst_gate_polarity,
@@ -1034,6 +1081,8 @@ class MainWindow(QMainWindow):
             widget.currentIndexChanged.connect(self._on_form_changed)
         self.frequency_unit.currentIndexChanged.connect(self._on_frequency_unit_changed)
         self.period_unit.currentIndexChanged.connect(self._on_period_unit_changed)
+        self.level_voltage_unit.currentIndexChanged.connect(self._on_level_voltage_unit_changed)
+        self.low_level_voltage_unit.currentIndexChanged.connect(self._on_level_voltage_unit_changed)
         self.burst_enabled.toggled.connect(self._on_burst_enabled_toggled)
         for spin in (
             self.frequency_hz,
@@ -1187,6 +1236,22 @@ class MainWindow(QMainWindow):
         if not self._loading_form:
             self._on_form_changed()
 
+    def _on_level_voltage_unit_changed(self) -> None:
+        old_unit = self._level_voltage_display_unit
+        source = self.sender()
+        if isinstance(source, QComboBox):
+            new_unit = str(source.currentData() or "V")
+        else:
+            new_unit = str(self.level_voltage_unit.currentData() or "V")
+        high_v = self._level_voltage_display_to_volts(self.high_v.value(), old_unit)
+        low_v = self._level_voltage_display_to_volts(self.low_v.value(), old_unit)
+        self._level_voltage_display_unit = new_unit
+        self._sync_level_voltage_unit_controls(new_unit)
+        self._configure_level_voltage_spin(new_unit, high_v, self.high_v)
+        self._configure_level_voltage_spin(new_unit, low_v, self.low_v)
+        if not self._loading_form:
+            self._on_form_changed()
+
     def _on_burst_enabled_toggled(self, enabled: bool) -> None:
         if self._loading_form:
             return
@@ -1201,6 +1266,38 @@ class MainWindow(QMainWindow):
             self._show_error("设置 Burst 失败", exc)
             return
         self._log(f"CH{self.active_channel} Burst {'开启' if enabled else '关闭'}: {command}")
+
+    def _on_load_changed(self) -> None:
+        if self._loading_form:
+            return
+        new_load = self.load.currentData()
+        if new_load not in ("50", "INF"):
+            self._on_form_changed()
+            return
+        previous_load: LoadMode = self.channel_settings[self.active_channel].load
+        if previous_load == new_load:
+            self._on_form_changed()
+            return
+
+        waveform = self._selected_waveform()
+        level = level_ui_state(waveform, self.level_mode.currentData())
+
+        def _scale_spin(spin: QDoubleSpinBox) -> None:
+            scaled = scale_voltage_for_load_change(spin.value(), previous_load, new_load)
+            spin.blockSignals(True)
+            spin.setValue(_clamp(scaled, spin.minimum(), spin.maximum()))
+            spin.blockSignals(False)
+
+        if level.high:
+            _scale_spin(self.high_v)
+        if level.low:
+            _scale_spin(self.low_v)
+        if level.amplitude:
+            _scale_spin(self.amplitude_vpp)
+        if level.offset:
+            _scale_spin(self.offset_v)
+
+        self._on_form_changed()
 
     def _on_form_changed(self) -> None:
         if self._loading_form:
@@ -1222,6 +1319,7 @@ class MainWindow(QMainWindow):
             channel_ui[self.active_channel] = ChannelUiConfig(
                 frequency_unit=self._frequency_display_unit,
                 period_unit=self._period_display_unit,
+                level_voltage_unit=self._level_voltage_display_unit,
             )
 
     def _save_config(self) -> None:
@@ -1259,14 +1357,17 @@ class MainWindow(QMainWindow):
         factors = {"ms": 0.001, "s": 1.0}
         return float(value) * factors.get(unit or self._period_display_unit, 0.001)
 
+    def _level_voltage_display_to_volts(self, value: float, unit: str | None = None) -> float:
+        factors = {"V": 1.0, "mV": 0.001}
+        return float(value) * factors.get(unit or self._level_voltage_display_unit, 1.0)
+
     def _configure_frequency_spin(self, unit: str, actual_hz: float) -> None:
         factors = {"Hz": 1.0, "kHz": 1_000.0, "MHz": 1_000_000.0}
-        decimals = {"Hz": 6, "kHz": 6, "MHz": 9}
         steps = {"Hz": 1.0, "kHz": 0.1, "MHz": 0.001}
         factor = factors.get(unit, 1_000.0)
         value = _clamp(actual_hz / factor, 1e-6 / factor, 25e6 / factor)
         self.frequency_hz.blockSignals(True)
-        self.frequency_hz.setDecimals(decimals.get(unit, 6))
+        self.frequency_hz.setDecimals(3)
         self.frequency_hz.setRange(1e-6 / factor, 25e6 / factor)
         self.frequency_hz.setSingleStep(steps.get(unit, 0.1))
         self.frequency_hz.setValue(value)
@@ -1274,16 +1375,44 @@ class MainWindow(QMainWindow):
 
     def _configure_period_spin(self, unit: str, actual_s: float) -> None:
         factors = {"ms": 0.001, "s": 1.0}
-        decimals = {"ms": 6, "s": 9}
+        decimals = {"ms": 3, "s": 3}
         steps = {"ms": 0.1, "s": 0.001}
         factor = factors.get(unit, 0.001)
         value = _clamp(actual_s / factor, 4e-8 / factor, 1e6 / factor)
         self.period_s.blockSignals(True)
-        self.period_s.setDecimals(decimals.get(unit, 6))
+        self.period_s.setDecimals(decimals.get(unit, 3))
         self.period_s.setRange(4e-8 / factor, 1e6 / factor)
         self.period_s.setSingleStep(steps.get(unit, 0.1))
         self.period_s.setValue(value)
         self.period_s.blockSignals(False)
+
+    def _configure_level_voltage_spin(
+        self,
+        unit: str,
+        actual_v: float,
+        spin: QDoubleSpinBox,
+    ) -> None:
+        if unit == "mV":
+            factor = 0.001
+            decimals = 2
+            step = 1.0
+        else:
+            factor = 1.0
+            decimals = 2
+            step = 0.1
+        minimum_v = -10.0
+        maximum_v = 10.0
+        value = _clamp(actual_v / factor, minimum_v / factor, maximum_v / factor)
+        spin.blockSignals(True)
+        spin.setDecimals(decimals)
+        spin.setRange(minimum_v / factor, maximum_v / factor)
+        spin.setSingleStep(step)
+        spin.setValue(value)
+        spin.blockSignals(False)
+
+    def _sync_level_voltage_unit_controls(self, unit: str) -> None:
+        _set_combo_data(self.level_voltage_unit, unit, silent=True)
+        _set_combo_data(self.low_level_voltage_unit, unit, silent=True)
 
     def _resolved_frequency_unit(self, saved: str, frequency_hz: float) -> str:
         if saved in VALID_FREQUENCY_UNITS:
@@ -1294,6 +1423,11 @@ class MainWindow(QMainWindow):
         if saved in VALID_PERIOD_UNITS:
             return saved
         return preferred_period_unit(period_s)
+
+    def _resolved_level_voltage_unit(self, saved: str, high_v: float) -> str:
+        if saved in VALID_LEVEL_VOLTAGE_UNITS:
+            return saved
+        return preferred_level_voltage_unit(high_v)
 
     def _apply_timing_display_units(self, settings: ChannelSettings) -> None:
         ui_key = (
@@ -1312,6 +1446,20 @@ class MainWindow(QMainWindow):
         _set_combo_data(self.period_unit, period_unit, silent=True)
         self._configure_frequency_spin(frequency_unit, settings.frequency_hz)
         self._configure_period_spin(period_unit, settings.period_s)
+
+    def _apply_level_voltage_display_units(self, settings: ChannelSettings) -> None:
+        ui_key = (
+            self.active_device_key
+            or self._current_visa_address()
+            or self._startup_config.visa_address
+        )
+        saved_ui = self.device_ui_settings.get(ui_key, {}).get(settings.channel)
+        saved_unit = saved_ui.level_voltage_unit if isinstance(saved_ui, ChannelUiConfig) else ""
+        level_unit = self._resolved_level_voltage_unit(saved_unit, settings.high_v)
+        self._level_voltage_display_unit = level_unit
+        self._sync_level_voltage_unit_controls(level_unit)
+        self._configure_level_voltage_spin(level_unit, settings.high_v, self.high_v)
+        self._configure_level_voltage_spin(level_unit, settings.low_v, self.low_v)
 
     def _calculated_pulse_width_s(
         self,
@@ -1361,8 +1509,8 @@ class MainWindow(QMainWindow):
             level_mode=self.level_mode.currentData(),
             amplitude_vpp=self.amplitude_vpp.value(),
             offset_v=self.offset_v.value(),
-            high_v=self.high_v.value(),
-            low_v=self.low_v.value(),
+            high_v=self._level_voltage_display_to_volts(self.high_v.value()),
+            low_v=self._level_voltage_display_to_volts(self.low_v.value()),
             duty_percent=duty_percent,
             phase_deg=self.phase_deg.value(),
             pulse_width_s=pulse_width_s,
@@ -1382,8 +1530,7 @@ class MainWindow(QMainWindow):
         _set_combo_data(self.level_mode, settings.level_mode)
         self.amplitude_vpp.setValue(settings.amplitude_vpp)
         self.offset_v.setValue(settings.offset_v)
-        self.high_v.setValue(settings.high_v)
-        self.low_v.setValue(settings.low_v)
+        self._apply_level_voltage_display_units(settings)
         self.duty_percent.setValue(settings.duty_percent)
         self.pulse_width_s.setValue(settings.pulse_width_s)
         self.ramp_symmetry.setValue(settings.ramp_symmetry_percent)
@@ -1435,6 +1582,8 @@ class MainWindow(QMainWindow):
         _set_spin_enabled(self.offset_v, level.offset)
         _set_spin_enabled(self.high_v, level.high)
         _set_spin_enabled(self.low_v, level.low)
+        self.level_voltage_unit.setEnabled(level.high)
+        self.low_level_voltage_unit.setEnabled(level.low)
         _set_spin_enabled(self.duty_percent, wave.duty)
         _set_spin_enabled(self.pulse_width_s, wave.pulse_width)
         _set_spin_enabled(self.ramp_symmetry, wave.ramp_symmetry)
@@ -1727,19 +1876,67 @@ class MainWindow(QMainWindow):
             shadow.setColor(QColor(30, 55, 82, alpha))
             widget.setGraphicsEffect(shadow)
 
+    def _finalize_parameter_panel(self) -> None:
+        for group in (
+            self.timing_group,
+            self.level_group,
+            self.shape_group,
+            self.burst_group,
+        ):
+            group.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
+            group.setFixedWidth(PARAM_CARD_WIDTH)
+        for widget in (
+            self.frequency_mode,
+            self.frequency_hz_editor,
+            self.period_s_editor,
+            self.phase_deg_editor,
+            self.level_mode,
+            self.load,
+            self.amplitude_vpp_editor,
+            self.offset_v_editor,
+            self.high_v_editor,
+            self.low_v_editor,
+            self.duty_percent_editor,
+            self.pulse_width_s_editor,
+            self.ramp_symmetry_editor,
+            self.burst_mode,
+            self.burst_trigger_source,
+            self.burst_cycles_editor,
+            self.burst_internal_period_editor,
+            self.burst_phase_editor,
+            self.burst_delay_editor,
+            self.burst_gate_polarity,
+            self.burst_trigger_slope,
+        ):
+            _constrain_param_field(widget)
+
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLE)
         for combo in self.findChildren(QComboBox):
             _prepare_combo_popup(combo)
 
 
+def _param_row_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("ParamRowLabel")
+    label.setFixedSize(PARAM_LABEL_WIDTH, PARAM_ROW_HEIGHT)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return label
+
+
+def _constrain_param_field(widget: QWidget) -> None:
+    widget.setFixedSize(PARAM_FIELD_WIDTH, PARAM_ROW_HEIGHT)
+    widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+
 def _form_layout(parent: QWidget) -> QFormLayout:
     layout = QFormLayout(parent)
-    layout.setLabelAlignment(Qt.AlignRight)
-    layout.setFormAlignment(Qt.AlignTop)
-    layout.setHorizontalSpacing(10)
-    layout.setVerticalSpacing(8)
-    layout.setContentsMargins(12, 10, 12, 10)
+    layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    layout.setFormAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+    layout.setHorizontalSpacing(PARAM_FORM_HORIZONTAL_SPACING)
+    layout.setVerticalSpacing(PARAM_FORM_VERTICAL_SPACING)
+    layout.setContentsMargins(PARAM_FORM_MARGIN_H, 8, PARAM_FORM_MARGIN_H, 8)
+    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
     return layout
 
 
@@ -1863,7 +2060,8 @@ def _spin_editor(
 
     editor = QFrame()
     editor.setObjectName("SpinEditorBox")
-    editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    editor.setFixedSize(PARAM_FIELD_WIDTH, PARAM_ROW_HEIGHT)
+    editor.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
     layout = QHBoxLayout(editor)
     layout.setContentsMargins(8, 3, 5, 3)
     layout.setSpacing(0)
@@ -2042,6 +2240,13 @@ QCheckBox::indicator:disabled {
 QScrollArea#ParameterScroll, QWidget#ParameterScrollBody {
     background: transparent;
     border: none;
+}
+QScrollArea#ParameterScroll > QWidget > QWidget {
+    background: transparent;
+}
+QScrollArea#ParameterScroll QScrollBar:vertical {
+    width: 5px;
+    margin: 2px 1px 2px 0;
 }
 QWidget#AppRoot, QWidget#ControlPage, QStackedWidget#PageStack {
     background: #eef4fa;
@@ -2327,12 +2532,18 @@ QFrame#RightPanel QLabel, QFrame#RightPanel QCheckBox {
 QFrame#RightPanel QLabel#PanelTitle {
     font-size: 16px;
 }
+QFrame#RightPanel QLabel#ParamRowLabel {
+    color: #607387;
+    font-size: 12px;
+    padding: 0;
+    background: transparent;
+}
 QFrame#RightPanel QGroupBox {
     background: #ffffff;
     border: 1px solid #dce5ef;
     border-radius: 10px;
     margin-top: 0;
-    padding: 2px;
+    padding: 0;
     font-size: 12px;
 }
 QFrame#RightPanel QGroupBox::title {
@@ -2460,11 +2671,12 @@ QListView::item:selected, QListView::item:hover {
 }
 QFrame#RightPanel QComboBox, QFrame#RightPanel QDoubleSpinBox, QFrame#RightPanel QSpinBox {
     min-height: 30px;
-    padding: 3px 8px;
+    max-height: 34px;
+    padding: 3px 6px 3px 8px;
     font-size: 12px;
 }
 QFrame#RightPanel QComboBox::drop-down {
-    width: 22px;
+    width: 18px;
 }
 QFrame#SpinEditorBox QFrame#UnitSeparator {
     background: #d4dfeb;
@@ -2483,8 +2695,8 @@ QFrame#SpinEditorBox QLabel#UnitLabel {
     background: transparent;
     color: #536478;
     font-size: 12px;
-    padding-left: 10px;
-    padding-right: 14px;
+    padding-left: 8px;
+    padding-right: 8px;
     border: none;
 }
 QFrame#SpinEditorBox QComboBox#UnitCombo,
@@ -2495,7 +2707,7 @@ QFrame#SpinEditorBox QComboBox#UnitCombo:hover {
     border: none;
     border-radius: 0;
     min-height: 24px;
-    padding: 0 14px 0 10px;
+    padding: 0 8px 0 8px;
     color: #536478;
 }
 QFrame#RightPanel QFrame#SpinEditorBox QComboBox#UnitCombo,
@@ -2504,11 +2716,11 @@ QFrame#RightPanel QFrame#SpinEditorBox QComboBox#UnitCombo:disabled {
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 0 14px 0 10px;
+    padding: 0 8px 0 8px;
     min-height: 24px;
 }
 QFrame#SpinEditorBox QComboBox#UnitCombo::drop-down {
-    width: 14px;
+    width: 10px;
     border: none;
     background: transparent;
 }
@@ -2519,6 +2731,8 @@ QFrame#SpinEditorBox {
     background: #ffffff;
     border: 1px solid #d4dfeb;
     border-radius: 9px;
+    min-height: 34px;
+    max-height: 34px;
 }
 QFrame#SpinEditorBox:disabled {
     background: #edf1f6;

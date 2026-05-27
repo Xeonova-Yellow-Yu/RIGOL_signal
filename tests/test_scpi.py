@@ -52,12 +52,13 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR1:FUNC:SQU:DCYC 25", commands)
         self.assertIn(":SOUR1:BURS:NCYC 3", commands)
         self.assertIn(":SOUR1:BURS:TRIG:SOUR MAN", commands)
-        self.assertEqual(commands[-2:], [":OUTP1:LOAD 50", ":OUTP1:STAT ON"])
+        self.assertEqual(commands[-1], ":OUTP1:STAT ON")
+        load_idx = commands.index(":OUTP1:LOAD 50")
+        volt_high_idx = commands.index(":SOUR1:VOLT:HIGH 3.3")
         phase_idx = commands.index(":SOUR1:PHAS:ADJ 45")
         burs_on_idx = commands.index(":SOUR1:BURS:STAT ON")
-        load_idx = commands.index(":OUTP1:LOAD 50")
+        self.assertLess(load_idx, volt_high_idx)
         self.assertLess(burs_on_idx, phase_idx)
-        self.assertLess(phase_idx, load_idx)
 
     def test_pulse_period_and_width_commands(self) -> None:
         settings = ChannelSettings(
@@ -78,11 +79,12 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR2:PHAS:ADJ 0", commands)
         self.assertNotIn(":SOUR2:PHAS:SYNC", commands)
         self.assertEqual(commands[-1], ":OUTP2:STAT OFF")
+        load_idx = commands.index(":OUTP2:LOAD INF")
+        volt_idx = commands.index(":SOUR2:VOLT 2")
         phase_idx = commands.index(":SOUR2:PHAS:ADJ 0")
         burs_off_idx = commands.index(":SOUR2:BURS:STAT OFF")
-        load_idx = commands.index(":OUTP2:LOAD INF")
+        self.assertLess(load_idx, volt_idx)
         self.assertLess(burs_off_idx, phase_idx)
-        self.assertLess(phase_idx, load_idx)
 
     def test_gated_burst_requires_external_trigger(self) -> None:
         settings = ChannelSettings(
@@ -148,6 +150,23 @@ class ScpiBuilderTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             build_channel_apply_commands(settings)
+
+    def test_load_command_precedes_voltage_commands(self) -> None:
+        settings = ChannelSettings(
+            level_mode="high_low",
+            high_v=1.0,
+            low_v=-1.0,
+            load="50",
+        )
+        commands = build_channel_apply_commands(settings)
+        load_idx = commands.index(":OUTP1:LOAD 50")
+        volt_indices = [
+            index
+            for index, command in enumerate(commands)
+            if ":VOLT" in command
+        ]
+        self.assertTrue(volt_indices)
+        self.assertLess(load_idx, min(volt_indices))
 
 
 if __name__ == "__main__":
