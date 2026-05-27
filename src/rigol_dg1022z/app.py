@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QAbstractSpinBox,
@@ -92,18 +92,18 @@ WORK_TOOLBAR_LABEL_WIDTH = 36
 WORK_TOOLBAR_ROW_HEIGHT = 40
 WORK_TOOLBAR_ROW_SPACING = 10
 WORK_TOOLBAR_CONTROL_HEIGHT = 36
-RIGHT_PANEL_MIN_WIDTH = 328
-RIGHT_PANEL_MAX_WIDTH = 332
+RIGHT_PANEL_MIN_WIDTH = 306
+RIGHT_PANEL_MAX_WIDTH = 310
 RIGHT_PANEL_MARGIN_LEFT = 14
 RIGHT_PANEL_MARGIN_TOP = 14
 RIGHT_PANEL_MARGIN_RIGHT = 12
 RIGHT_PANEL_MARGIN_BOTTOM = 14
-PARAM_LABEL_WIDTH = 64
-PARAM_FIELD_WIDTH = 194
+PARAM_LABEL_WIDTH = 56
+PARAM_FIELD_WIDTH = 198
 PARAM_ROW_HEIGHT = 34
 PARAM_FORM_HORIZONTAL_SPACING = 8
-PARAM_FORM_VERTICAL_SPACING = 7
-PARAM_FORM_MARGIN_H = 10
+PARAM_FORM_VERTICAL_SPACING = 8
+PARAM_FORM_MARGIN_H = 8
 PARAM_CARD_WIDTH = (
     PARAM_FORM_MARGIN_H * 2
     + PARAM_LABEL_WIDTH
@@ -118,6 +118,7 @@ UNIT_SLOT_PAD_RIGHT = 8
 VALID_FREQUENCY_UNITS = frozenset({"Hz", "kHz", "MHz"})
 VALID_PERIOD_UNITS = frozenset({"ms", "s"})
 VALID_LEVEL_VOLTAGE_UNITS = frozenset({"V", "mV"})
+CONNECT_RETRY_COUNT = 3
 
 
 class CleanComboBox(QComboBox):
@@ -255,6 +256,64 @@ class ChannelCard(QFrame):
         if event.button() == Qt.LeftButton:
             self.selected.emit(self.channel)
         super().mouseReleaseEvent(event)
+
+
+class CheckMarkCheckBox(QCheckBox):
+    def sizeHint(self) -> QSize:
+        text_width = self.fontMetrics().horizontalAdvance(self.text())
+        return QSize(16 + 8 + text_width, max(22, self.fontMetrics().height() + 4))
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        checked = self.isChecked()
+        enabled = self.isEnabled()
+        active = self.hasFocus() or self.underMouse()
+        indicator_size = 16
+        top = (self.height() - indicator_size) / 2
+        indicator = QRectF(0.5, top + 0.5, indicator_size - 1, indicator_size - 1)
+
+        border_color = QColor("#338de6" if active or checked else "#cfd8e5")
+        fill_color = QColor("#ffffff" if enabled else "#edf1f6")
+        if not enabled:
+            border_color = QColor("#d9e1eb")
+        painter.setPen(QPen(border_color, 1.4))
+        painter.setBrush(fill_color)
+        painter.drawRoundedRect(indicator, 4, 4)
+
+        if checked:
+            check_color = QColor("#1879d9" if enabled else "#8fb6df")
+            painter.setPen(
+                QPen(
+                    check_color,
+                    2.2,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
+            painter.drawLine(
+                QPointF(indicator.left() + 3.8, indicator.top() + 8.2),
+                QPointF(indicator.left() + 6.8, indicator.bottom() - 4.2),
+            )
+            painter.drawLine(
+                QPointF(indicator.left() + 6.8, indicator.bottom() - 4.2),
+                QPointF(indicator.right() - 3.2, indicator.top() + 4.4),
+            )
+
+        painter.setPen(QColor("#17283b" if enabled else "#8a96a8"))
+        text_rect = self.rect().adjusted(indicator_size + 8, 0, 0, 0)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
+
+    def enterEvent(self, event) -> None:
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.update()
+        super().leaveEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -998,12 +1057,14 @@ class MainWindow(QMainWindow):
         burst_layout.setSpacing(6)
         burst_layout.addWidget(_section_title("Burst"))
         burst_head = QHBoxLayout()
-        burst_head.setSpacing(10)
-        self.burst_enabled = QCheckBox("启用 Burst")
+        burst_head.setContentsMargins(0, 0, 0, 0)
+        burst_head.setSpacing(0)
+        self.burst_enabled = CheckMarkCheckBox("启用 Burst")
         self.burst_status = QLabel("OFF")
         self.burst_status.setObjectName("StatePill")
         self.burst_status.setAlignment(Qt.AlignCenter)
         self.burst_status.setFixedSize(50, 22)
+
         burst_head.addWidget(self.burst_enabled)
         burst_head.addStretch(1)
         burst_head.addWidget(self.burst_status)
@@ -1682,19 +1743,65 @@ class MainWindow(QMainWindow):
             self._set_connection_row_state(row, True, "已连接")
             self._select_device(address, navigate=False)
             return
-        client = RigolVisaClient(log=self._log)
+        attempts = CONNECT_RETRY_COUNT + 1
+        last_exc: Exception | None = None
+        connected = False
+        button = row.get("button")
+        address_box = row.get("address")
+        if isinstance(button, QPushButton):
+            button.setEnabled(False)
+        if isinstance(address_box, QComboBox):
+            address_box.setEnabled(False)
         try:
-            result = client.connect(address)
-        except Exception as exc:
-            self._set_connection_row_state(row, False, "连接失败", failed=True)
-            self._log("连接排查提示：请检查网线、IP 地址、VISA 驱动和设备电源。")
-            self._show_error("连接失败", exc)
+            for attempt in range(1, attempts + 1):
+                status = "连接中" if attempt == 1 else f"重试 {attempt - 1}/{CONNECT_RETRY_COUNT}"
+                self._set_connection_row_state(row, False, status)
+                if isinstance(address_box, QComboBox):
+                    address_box.setEnabled(False)
+                QApplication.processEvents()
+                client = RigolVisaClient(log=self._log)
+                try:
+                    result = client.connect(address)
+                except Exception as exc:
+                    last_exc = exc
+                    client.disconnect()
+                    self._log(f"连接尝试 {attempt}/{attempts} 失败: {exc}")
+                    continue
+                self.clients[address] = client
+                self.client = client
+                connected = True
+                self._register_device(address, result.idn)
+                self._select_device(address, navigate=False)
+                self._sync_burst_state_after_connect(address)
+                self._log(f"连接成功: {address} [{result.backend}] {result.idn}")
+                return
+        finally:
+            if isinstance(button, QPushButton):
+                button.setEnabled(True)
+            if isinstance(address_box, QComboBox) and not connected:
+                address_box.setEnabled(True)
+        self._set_connection_row_state(row, False, "连接失败", failed=True)
+        self._log("连接排查提示：请检查网线、IP 地址、VISA 驱动和设备电源。")
+        if last_exc is not None:
+            self._show_error("连接失败", last_exc)
+        else:
+            self._show_error("连接失败", RuntimeError("连接失败"))
+        return
+
+    def _sync_burst_state_after_connect(self, address: str) -> None:
+        client = self.clients.get(address)
+        channels = self.device_settings.get(address, self.channel_settings)
+        if client is None:
             return
-        self.clients[address] = client
-        self.client = client
-        self._register_device(address, result.idn)
-        self._select_device(address, navigate=False)
-        self._log(f"连接成功: {address} [{result.backend}] {result.idn}")
+        for channel, settings in sorted(channels.items()):
+            enabled = bool(settings.burst.enabled and waveform_ui_state(settings.waveform).burst)
+            try:
+                command = client.set_burst_enabled(channel, enabled)
+            except Exception as exc:
+                self._log(f"CH{channel} Burst 连接同步失败: {exc}")
+                continue
+            state = "开启" if enabled else "关闭"
+            self._log(f"CH{channel} Burst 连接同步{state}: {command}")
 
     def _disconnect(self, address: str | None = None) -> None:
         address = (address or self.active_device_key or self._current_visa_address()).strip()
