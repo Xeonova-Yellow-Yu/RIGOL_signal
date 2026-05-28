@@ -1316,16 +1316,23 @@ class MainWindow(QMainWindow):
     def _on_burst_enabled_toggled(self, enabled: bool) -> None:
         if self._loading_form:
             return
-        self._on_form_changed()
+        previous_enabled = self.channel_settings[self.active_channel].burst.enabled
         if self.burst_enabled.isChecked() != enabled:
             return
         if self.active_device_key not in self.clients:
+            self._on_form_changed()
             return
         try:
             command = self.client.set_burst_enabled(self.active_channel, enabled)
         except Exception as exc:
+            self.burst_enabled.blockSignals(True)
+            self.burst_enabled.setChecked(previous_enabled)
+            self.burst_enabled.blockSignals(False)
+            self._apply_form_state_rules()
+            self._refresh_view()
             self._show_error("设置 Burst 失败", exc)
             return
+        self._on_form_changed()
         self._log(f"CH{self.active_channel} Burst {'开启' if enabled else '关闭'}: {command}")
 
     def _on_load_changed(self) -> None:
@@ -1793,7 +1800,16 @@ class MainWindow(QMainWindow):
         channels = self.device_settings.get(address, self.channel_settings)
         if client is None:
             return
-        for channel, settings in sorted(channels.items()):
+        active_channel = self.device_active_channels.get(address, self.active_channel)
+        channel_order = [
+            channel
+            for channel in sorted(channels)
+            if channel != active_channel
+        ]
+        if active_channel in channels:
+            channel_order.append(active_channel)
+        for channel in channel_order:
+            settings = channels[channel]
             enabled = bool(settings.burst.enabled and waveform_ui_state(settings.waveform).burst)
             try:
                 command = client.set_burst_enabled(channel, enabled)

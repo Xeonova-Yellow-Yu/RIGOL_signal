@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
 from .domain import ChannelSettings
 from .scpi import (
     build_burst_state_command,
+    build_burst_state_query,
     build_channel_apply_commands,
     build_fire_burst_command,
     build_output_command,
@@ -16,6 +18,8 @@ from .scpi import (
 
 
 LogFn = Callable[[str], None]
+BURST_STATE_VERIFY_ATTEMPTS = 3
+BURST_STATE_VERIFY_DELAY_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,18 @@ class ConnectResult:
 
 class VisaUnavailableError(RuntimeError):
     pass
+
+
+def _parse_state_reply(reply: str) -> bool | None:
+    token = reply.strip().upper()
+    if token in {"1", "+1", "ON", "TRUE"}:
+        return True
+    if token in {"0", "+0", "OFF", "FALSE"}:
+        return False
+    try:
+        return bool(int(float(token)))
+    except ValueError:
+        return None
 
 
 class RigolVisaClient:
@@ -123,8 +139,30 @@ class RigolVisaClient:
 
     def set_burst_enabled(self, channel: int, enabled: bool) -> str:
         command = build_burst_state_command(channel, enabled)
-        self.write(command)
-        return command
+        query = build_burst_state_query(channel)
+        expected = "ON" if enabled else "OFF"
+        last_reply = ""
+        for attempt in range(1, BURST_STATE_VERIFY_ATTEMPTS + 1):
+            self.write(command)
+            if BURST_STATE_VERIFY_DELAY_S > 0:
+                time.sleep(BURST_STATE_VERIFY_DELAY_S)
+            try:
+                last_reply = self.query(query).strip()
+            except Exception as exc:
+                self._log(f"CH{channel} Burst 状态确认失败 {attempt}/{BURST_STATE_VERIFY_ATTEMPTS}: {exc}")
+                if attempt >= BURST_STATE_VERIFY_ATTEMPTS:
+                    raise RuntimeError(f"CH{channel} Burst 状态确认失败") from exc
+                continue
+
+            actual = _parse_state_reply(last_reply)
+            if actual is enabled:
+                return command
+            self._log(
+                f"CH{channel} Burst 回读不一致 {attempt}/{BURST_STATE_VERIFY_ATTEMPTS}: "
+                f"期望 {expected}, 实际 {last_reply or '<empty>'}"
+            )
+
+        raise RuntimeError(f"CH{channel} Burst 未切换到 {expected}，仪器回读: {last_reply or '<empty>'}")
 
     def fire_burst(self, channel: int) -> str:
         command = build_fire_burst_command(channel)

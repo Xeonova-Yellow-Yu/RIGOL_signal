@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 from rigol_dg1022z.domain import BurstSettings, ChannelSettings, ValidationError
 from rigol_dg1022z.scpi import (
     build_burst_state_command,
+    build_burst_state_query,
     build_channel_apply_commands,
     build_fire_burst_command,
     build_output_command,
@@ -134,6 +135,7 @@ class ScpiBuilderTests(unittest.TestCase):
     def test_output_and_fire_commands_validate_channel(self) -> None:
         self.assertEqual(build_output_command(1, True), ":OUTP1:STAT ON")
         self.assertEqual(build_burst_state_command(1, True), ":SOUR1:BURS:STAT ON")
+        self.assertEqual(build_burst_state_query(1), ":SOUR1:BURS:STAT?")
         self.assertEqual(build_fire_burst_command(2), ":SOUR2:BURS:TRIG")
         with self.assertRaises(ValueError):
             build_output_command(3, True)

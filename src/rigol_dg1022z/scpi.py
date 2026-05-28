@@ -163,6 +163,12 @@ def build_burst_state_command(channel: int, enabled: bool) -> str:
     return f":SOUR{channel}:BURS:STAT {_state(enabled)}"
 
 
+def build_burst_state_query(channel: int) -> str:
+    if channel not in (1, 2):
+        raise ValueError("DG1022Z 只支持 CH1/CH2")
+    return f":SOUR{channel}:BURS:STAT?"
+
+
 def build_fire_burst_command(channel: int) -> str:
     if channel not in (1, 2):
         raise ValueError("DG1022Z 只支持 CH1/CH2")
