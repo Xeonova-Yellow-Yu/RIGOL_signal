@@ -33,6 +33,7 @@ class BurstUiState:
     trigger_source: bool
     internal_period: bool
     phase: bool
+    idle_level: bool
     delay: bool
     gate_polarity: bool
     trigger_slope: bool
@@ -91,6 +92,7 @@ def burst_ui_state(
         trigger_source=active and not is_gated,
         internal_period=uses_internal,
         phase=active,
+        idle_level=active,
         delay=active and not is_gated,
         gate_polarity=active and is_gated,
         trigger_slope=uses_external and not is_gated,

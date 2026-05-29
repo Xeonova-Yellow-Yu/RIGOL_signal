@@ -261,6 +261,14 @@ def _burst_from_dict(data: Any, fallback: BurstSettings) -> BurstSettings:
     if not isinstance(data, dict):
         return fallback
     payload = _dataclass_payload(BurstSettings, data, fallback)
+    idle_mode = payload.get("idle_mode", fallback.idle_mode)
+    if idle_mode not in ("FPT", "TOP", "CENTER", "BOTTOM", "USER"):
+        payload["idle_mode"] = fallback.idle_mode
+    try:
+        idle_point = int(payload.get("idle_point", fallback.idle_point))
+    except (TypeError, ValueError):
+        idle_point = fallback.idle_point
+    payload["idle_point"] = max(0, min(16383, idle_point))
     try:
         return BurstSettings(**payload)
     except Exception:

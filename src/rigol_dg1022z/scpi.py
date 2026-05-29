@@ -147,14 +147,25 @@ def _build_burst_commands(src: str, burst: BurstSettings) -> list[str]:
     elif burst.trigger_source == "EXT":
         commands.append(f"{src}:BURS:TRIG:SLOP {burst.trigger_slope}")
 
+    commands.append(build_burst_idle_command(src, burst))
     commands.append(f"{src}:BURS:STAT ON")
     return commands
+
+
+def build_burst_idle_command(src: str, burst: BurstSettings) -> str:
+    if burst.idle_mode == "USER":
+        return f"{src}:BURS:IDLE {int(burst.idle_point)}"
+    return f"{src}:BURS:IDLE {burst.idle_mode}"
 
 
 def build_output_command(channel: int, enabled: bool) -> str:
     if channel not in (1, 2):
         raise ValueError("DG1022Z 只支持 CH1/CH2")
     return f":OUTP{channel}:STAT {_state(enabled)}"
+
+
+def build_all_outputs_off_commands(channels: tuple[int, ...] = (1, 2)) -> list[str]:
+    return [build_output_command(channel, False) for channel in channels]
 
 
 def build_burst_state_command(channel: int, enabled: bool) -> str:

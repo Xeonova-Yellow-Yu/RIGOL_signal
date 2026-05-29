@@ -8,6 +8,7 @@ Waveform = Literal["SIN", "SQU", "PULS", "RAMP", "NOIS", "DC", "USER"]
 FrequencyMode = Literal["frequency", "period"]
 LevelMode = Literal["amplitude_offset", "high_low"]
 BurstMode = Literal["TRIG", "INF", "GAT"]
+BurstIdleMode = Literal["FPT", "TOP", "CENTER", "BOTTOM", "USER"]
 TriggerSource = Literal["INT", "EXT", "MAN"]
 Polarity = Literal["NORM", "INV"]
 Slope = Literal["POS", "NEG"]
@@ -69,6 +70,8 @@ class InstrumentLimits:
     max_pulse_width_s: float = 999_999.0
     min_burst_cycles: int = 1
     max_burst_cycles: int = 1_000_000
+    min_burst_idle_point: int = 0
+    max_burst_idle_point: int = 16383
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,8 @@ class BurstSettings:
     delay_s: float = 0.0
     gate_polarity: Polarity = "NORM"
     trigger_slope: Slope = "POS"
+    idle_mode: BurstIdleMode = "FPT"
+    idle_point: int = 0
 
     def validate(self, limits: InstrumentLimits) -> None:
         if not self.enabled:
@@ -106,6 +111,17 @@ class BurstSettings:
             raise ValidationError("Burst 触发延时不能为负数")
         if not (limits.min_phase_deg <= self.phase_deg <= limits.max_phase_deg):
             raise ValidationError("Burst 相位超出范围")
+        if self.idle_mode not in ("FPT", "TOP", "CENTER", "BOTTOM", "USER"):
+            raise ValidationError(f"Burst 空闲电平模式无效: {self.idle_mode}")
+        if not (
+            limits.min_burst_idle_point
+            <= int(self.idle_point)
+            <= limits.max_burst_idle_point
+        ):
+            raise ValidationError(
+                f"Burst 自定义空闲点需在 {limits.min_burst_idle_point}"
+                f"..{limits.max_burst_idle_point}"
+            )
 
 
 @dataclass(frozen=True)

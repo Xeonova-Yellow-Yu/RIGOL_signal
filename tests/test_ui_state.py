@@ -57,6 +57,7 @@ class UiStateTests(unittest.TestCase):
         self.assertFalse(gated.trigger_source)
         self.assertTrue(internal.internal_period)
         self.assertFalse(internal.software_trigger)
+        self.assertTrue(internal.idle_level)
 
     def test_trigger_source_coercion(self) -> None:
         self.assertEqual(coerce_burst_trigger_source("GAT", "MAN"), "EXT")

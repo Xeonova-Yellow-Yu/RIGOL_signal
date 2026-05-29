@@ -42,7 +42,13 @@ class ConfigTests(unittest.TestCase):
                         waveform="PULS",
                         frequency_mode="period",
                         period_s=0.002,
-                        burst=BurstSettings(enabled=True, mode="TRIG", cycles=7),
+                        burst=BurstSettings(
+                            enabled=True,
+                            mode="TRIG",
+                            cycles=7,
+                            idle_mode="BOTTOM",
+                            idle_point=512,
+                        ),
                     ),
                 },
             )
@@ -56,6 +62,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(loaded.channels[1].load, "50")
             self.assertEqual(loaded.channels[2].period_s, 0.002)
             self.assertEqual(loaded.channels[2].burst.cycles, 7)
+            self.assertEqual(loaded.channels[2].burst.idle_mode, "BOTTOM")
+            self.assertEqual(loaded.channels[2].burst.idle_point, 512)
             self.assertIn("USB0::0x1AB1::0x0642::DG1::INSTR", loaded.devices)
             self.assertEqual(
                 loaded.devices["USB0::0x1AB1::0x0642::DG1::INSTR"].channels[1].waveform,

@@ -7,6 +7,7 @@ from typing import Callable, Iterable
 
 from .domain import ChannelSettings
 from .scpi import (
+    build_all_outputs_off_commands,
     build_burst_state_command,
     build_burst_state_query,
     build_channel_apply_commands,
@@ -136,6 +137,11 @@ class RigolVisaClient:
         command = build_output_command(channel, enabled)
         self.write(command)
         return command
+
+    def set_all_outputs_off(self, channels: tuple[int, ...] = (1, 2)) -> list[str]:
+        commands = build_all_outputs_off_commands(channels)
+        self.write_many(commands)
+        return commands
 
     def set_burst_enabled(self, channel: int, enabled: bool) -> str:
         command = build_burst_state_command(channel, enabled)

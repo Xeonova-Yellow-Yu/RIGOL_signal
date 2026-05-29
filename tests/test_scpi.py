@@ -12,6 +12,8 @@ if str(SRC) not in sys.path:
 
 from rigol_dg1022z.domain import BurstSettings, ChannelSettings, ValidationError
 from rigol_dg1022z.scpi import (
+    build_all_outputs_off_commands,
+    build_burst_idle_command,
     build_burst_state_command,
     build_burst_state_query,
     build_channel_apply_commands,
@@ -53,6 +55,7 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR1:FUNC:SQU:DCYC 25", commands)
         self.assertIn(":SOUR1:BURS:NCYC 3", commands)
         self.assertIn(":SOUR1:BURS:TRIG:SOUR MAN", commands)
+        self.assertIn(":SOUR1:BURS:IDLE FPT", commands)
         self.assertEqual(commands[-1], ":OUTP1:STAT ON")
         load_idx = commands.index(":OUTP1:LOAD 50")
         volt_high_idx = commands.index(":SOUR1:VOLT:HIGH 3.3")
@@ -131,6 +134,35 @@ class ScpiBuilderTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             build_channel_apply_commands(settings)
+
+    def test_burst_idle_commands(self) -> None:
+        self.assertEqual(
+            build_burst_idle_command(":SOUR1", BurstSettings(idle_mode="BOTTOM")),
+            ":SOUR1:BURS:IDLE BOTTOM",
+        )
+        self.assertEqual(
+            build_burst_idle_command(
+                ":SOUR2",
+                BurstSettings(idle_mode="USER", idle_point=1024),
+            ),
+            ":SOUR2:BURS:IDLE 1024",
+        )
+
+        enabled = ChannelSettings(
+            burst=BurstSettings(enabled=True, idle_mode="TOP", trigger_source="MAN"),
+        )
+        disabled = ChannelSettings(burst=BurstSettings(enabled=False, idle_mode="TOP"))
+        enabled_commands = build_channel_apply_commands(enabled)
+        disabled_commands = build_channel_apply_commands(disabled)
+
+        self.assertIn(":SOUR1:BURS:IDLE TOP", enabled_commands)
+        self.assertNotIn("BURS:IDLE", " ".join(disabled_commands))
+
+    def test_all_outputs_off_commands(self) -> None:
+        self.assertEqual(
+            build_all_outputs_off_commands(),
+            [":OUTP1:STAT OFF", ":OUTP2:STAT OFF"],
+        )
 
     def test_output_and_fire_commands_validate_channel(self) -> None:
         self.assertEqual(build_output_command(1, True), ":OUTP1:STAT ON")

@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
     QAbstractSpinBox,
@@ -175,8 +175,34 @@ class CleanComboBox(QComboBox):
             outer.addWidget(item_host)
 
         height = visible_rows * row_height + 6
-        popup.setFixedSize(max(self.width(), content_width, 120), height)
-        popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        width = max(self.width(), content_width, 120)
+        popup.setFixedSize(width, height)
+
+        global_bottom_left = self.mapToGlobal(QPoint(0, self.height()))
+        global_top_left = self.mapToGlobal(QPoint(0, 0))
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            x = global_bottom_left.x()
+            if x + width > available.right():
+                x = max(available.left(), available.right() - width + 1)
+            x = max(available.left(), x)
+
+            space_below = available.bottom() - global_bottom_left.y()
+            space_above = global_top_left.y() - available.top()
+            if height <= space_below or space_below >= space_above:
+                y = global_bottom_left.y()
+            else:
+                y = global_top_left.y() - height
+            if y + height > available.bottom():
+                y = max(available.top(), available.bottom() - height + 1)
+            if y < available.top():
+                y = available.top()
+        else:
+            x = global_bottom_left.x()
+            y = global_bottom_left.y()
+
+        popup.move(x, y)
         self._popup = popup
         popup.show()
 
@@ -952,10 +978,11 @@ class MainWindow(QMainWindow):
 
         scroll = QScrollArea(panel)
         scroll.setObjectName("ParameterScroll")
+        self.parameter_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored)
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         scroll_body = QWidget(scroll)
@@ -1090,6 +1117,16 @@ class MainWindow(QMainWindow):
         self.burst_internal_period = _double_spin(1e-6, 1e6, 0.01, 6, 0.001)
         self.burst_phase = _double_spin(0.0, 360.0, 0.0, 3, 1.0)
         self.burst_delay = _double_spin(0.0, 1e6, 0.0, 3, 0.001)
+        self.burst_idle_mode = CleanComboBox()
+        self.burst_idle_mode.addItem("首点", "FPT")
+        self.burst_idle_mode.addItem("顶部", "TOP")
+        self.burst_idle_mode.addItem("中心", "CENTER")
+        self.burst_idle_mode.addItem("底部", "BOTTOM")
+        self.burst_idle_mode.addItem("自定义", "USER")
+        self.burst_idle_point = QSpinBox()
+        self.burst_idle_point.setRange(0, 16383)
+        self.burst_idle_point.setValue(0)
+        self.burst_idle_point.setToolTip("自定义波形采样点号 (0–16383)")
         self.burst_gate_polarity = CleanComboBox()
         self.burst_gate_polarity.addItem("正门控", "NORM")
         self.burst_gate_polarity.addItem("反门控", "INV")
@@ -1099,12 +1136,36 @@ class MainWindow(QMainWindow):
         self.burst_cycles_editor = _spin_editor(self.burst_cycles)
         self.burst_internal_period_editor = _spin_editor(self.burst_internal_period, suffix="s")
         self.burst_phase_editor = _spin_editor(self.burst_phase, suffix="deg")
+        self.burst_idle_point_editor = _spin_editor(self.burst_idle_point)
+        self.burst_idle_point_editor.setToolTip("自定义波形采样点号 (0–16383)")
         self.burst_delay_editor = _spin_editor(self.burst_delay, suffix="s")
+        self.burst_idle_row = QWidget()
+        self.burst_idle_row.setObjectName("BurstIdleRow")
+        _clear_widget_background(self.burst_idle_row)
+        burst_idle_layout = QVBoxLayout(self.burst_idle_row)
+        burst_idle_layout.setContentsMargins(0, 0, 0, 0)
+        burst_idle_layout.setSpacing(4)
+        burst_idle_layout.addWidget(self.burst_idle_mode)
+        self.burst_idle_point_row = QWidget()
+        self.burst_idle_point_row.setObjectName("BurstIdlePointRow")
+        _clear_widget_background(self.burst_idle_point_row)
+        burst_idle_point_layout = QHBoxLayout(self.burst_idle_point_row)
+        burst_idle_point_layout.setContentsMargins(0, 0, 0, 0)
+        burst_idle_point_layout.setSpacing(6)
+        burst_idle_point_label = QLabel("点号")
+        burst_idle_point_label.setObjectName("ParamSubLabel")
+        burst_idle_point_label.setFixedWidth(40)
+        burst_idle_point_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        burst_idle_point_layout.addWidget(burst_idle_point_label)
+        burst_idle_point_layout.addWidget(self.burst_idle_point_editor)
+        burst_idle_layout.addWidget(self.burst_idle_point_row)
+        self.burst_idle_point_row.setVisible(False)
         burst_details_form.addRow(_param_row_label("类型"), self.burst_mode)
         burst_details_form.addRow(_param_row_label("触发源"), self.burst_trigger_source)
         burst_details_form.addRow(_param_row_label("周期数"), self.burst_cycles_editor)
         burst_details_form.addRow(_param_row_label("内部周期"), self.burst_internal_period_editor)
         burst_details_form.addRow(_param_row_label("相位"), self.burst_phase_editor)
+        burst_details_form.addRow(_param_row_label("空闲电平"), self.burst_idle_row)
         burst_details_form.addRow(_param_row_label("延时"), self.burst_delay_editor)
         burst_details_form.addRow(_param_row_label("门控极性"), self.burst_gate_polarity)
         burst_details_form.addRow(_param_row_label("外触发沿"), self.burst_trigger_slope)
@@ -1138,6 +1199,7 @@ class MainWindow(QMainWindow):
             self.burst_trigger_source,
             self.burst_gate_polarity,
             self.burst_trigger_slope,
+            self.burst_idle_mode,
         ):
             widget.currentIndexChanged.connect(self._on_form_changed)
         self.frequency_unit.currentIndexChanged.connect(self._on_frequency_unit_changed)
@@ -1159,6 +1221,7 @@ class MainWindow(QMainWindow):
             self.burst_cycles,
             self.burst_internal_period,
             self.burst_phase,
+            self.burst_idle_point,
             self.burst_delay,
         ):
             spin.valueChanged.connect(self._on_form_changed)
@@ -1567,6 +1630,8 @@ class MainWindow(QMainWindow):
             delay_s=self.burst_delay.value(),
             gate_polarity=self.burst_gate_polarity.currentData(),
             trigger_slope=self.burst_trigger_slope.currentData(),
+            idle_mode=self.burst_idle_mode.currentData(),
+            idle_point=self.burst_idle_point.value(),
         )
         return ChannelSettings(
             channel=self.active_channel,
@@ -1609,6 +1674,8 @@ class MainWindow(QMainWindow):
         _set_combo_data(self.burst_trigger_source, settings.burst.trigger_source)
         self.burst_internal_period.setValue(settings.burst.internal_period_s)
         self.burst_phase.setValue(settings.burst.phase_deg)
+        _set_combo_data(self.burst_idle_mode, settings.burst.idle_mode)
+        self.burst_idle_point.setValue(settings.burst.idle_point)
         self.burst_delay.setValue(settings.burst.delay_s)
         _set_combo_data(self.burst_gate_polarity, settings.burst.gate_polarity)
         _set_combo_data(self.burst_trigger_slope, settings.burst.trigger_slope)
@@ -1683,6 +1750,13 @@ class MainWindow(QMainWindow):
         _set_spin_enabled(self.burst_cycles, burst.cycles)
         _set_spin_enabled(self.burst_internal_period, burst.internal_period)
         _set_spin_enabled(self.burst_phase, burst.phase)
+        self.burst_idle_mode.setEnabled(burst.idle_level)
+        idle_is_user = self.burst_idle_mode.currentData() == "USER"
+        _set_spin_enabled(self.burst_idle_point, burst.idle_level and idle_is_user)
+        show_idle_point = burst.idle_level and idle_is_user
+        self.burst_idle_point_row.setVisible(show_idle_point)
+        if show_idle_point:
+            self._ensure_parameter_field_visible(self.burst_idle_point_row)
         _set_spin_enabled(self.burst_delay, burst.delay)
         self.burst_gate_polarity.setEnabled(burst.gate_polarity)
         self.burst_trigger_slope.setEnabled(burst.trigger_slope)
@@ -1691,9 +1765,16 @@ class MainWindow(QMainWindow):
         _set_form_row_visible(self.burst_cycles_editor, burst.cycles)
         _set_form_row_visible(self.burst_internal_period_editor, burst.internal_period)
         _set_form_row_visible(self.burst_phase_editor, burst.phase)
+        _set_form_row_visible(self.burst_idle_row, burst.idle_level)
         _set_form_row_visible(self.burst_delay_editor, burst.delay)
         _set_form_row_visible(self.burst_gate_polarity, burst.gate_polarity)
         _set_form_row_visible(self.burst_trigger_slope, burst.trigger_slope)
+
+    def _ensure_parameter_field_visible(self, widget: QWidget) -> None:
+        scroll = getattr(self, "parameter_scroll", None)
+        if scroll is None:
+            return
+        scroll.ensureWidgetVisible(widget, 24, 24)
 
     def _refresh_view(self) -> None:
         current = self._settings_from_form()
@@ -1778,6 +1859,7 @@ class MainWindow(QMainWindow):
                 self.client = client
                 connected = True
                 self._register_device(address, result.idn)
+                self._disable_all_outputs_after_connect(address)
                 self._select_device(address, navigate=False)
                 self._sync_burst_state_after_connect(address)
                 self._log(f"连接成功: {address} [{result.backend}] {result.idn}")
@@ -1794,6 +1876,28 @@ class MainWindow(QMainWindow):
         else:
             self._show_error("连接失败", RuntimeError("连接失败"))
         return
+
+    def _disable_all_outputs_after_connect(self, address: str) -> None:
+        client = self.clients.get(address)
+        if client is None:
+            return
+        try:
+            commands = client.set_all_outputs_off()
+        except Exception as exc:
+            self._log(f"连接安全：关闭 CH1/CH2 输出失败: {exc}")
+            return
+        channels = self.device_settings.setdefault(address, dict(self.default_channel_settings))
+        for channel in (1, 2):
+            settings = channels.get(channel)
+            if settings is None:
+                continue
+            channels[channel] = ChannelSettings(
+                **{**settings.__dict__, "output_enabled": False}
+            )
+        self._log(
+            "连接安全：已关闭 CH1/CH2 输出: "
+            + ", ".join(commands)
+        )
 
     def _sync_burst_state_after_connect(self, address: str) -> None:
         client = self.clients.get(address)
@@ -2027,11 +2131,16 @@ class MainWindow(QMainWindow):
             self.burst_cycles_editor,
             self.burst_internal_period_editor,
             self.burst_phase_editor,
+            self.burst_idle_mode,
             self.burst_delay_editor,
             self.burst_gate_polarity,
             self.burst_trigger_slope,
         ):
             _constrain_param_field(widget)
+        self.burst_idle_point_editor.setFixedSize(
+            PARAM_FIELD_WIDTH - 46,
+            PARAM_ROW_HEIGHT,
+        )
 
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLE)
@@ -2661,6 +2770,12 @@ QFrame#RightPanel QLabel#ParamRowLabel {
     padding: 0;
     background: transparent;
 }
+QFrame#RightPanel QLabel#ParamSubLabel {
+    color: #7a8ea3;
+    font-size: 11px;
+    padding: 0;
+    background: transparent;
+}
 QFrame#RightPanel QGroupBox {
     background: #ffffff;
     border: 1px solid #dce5ef;
@@ -2971,6 +3086,9 @@ QLabel#SummaryLineStrong {
 QFrame#InlineDetails {
     background: transparent;
     border: none;
+}
+QWidget#BurstIdleRow, QWidget#BurstIdlePointRow {
+    background: transparent;
 }
 QTextEdit#LogText {
     background: #ffffff;
