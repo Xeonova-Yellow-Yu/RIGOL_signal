@@ -21,6 +21,7 @@ from .scpi import (
 LogFn = Callable[[str], None]
 BURST_STATE_VERIFY_ATTEMPTS = 3
 BURST_STATE_VERIFY_DELAY_S = 0.05
+SYSTEM_ERROR_DRAIN_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,12 @@ class ConnectResult:
 
 class VisaUnavailableError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SystemErrorReadResult:
+    errors: list[str]
+    cleared: bool
 
 
 def _parse_state_reply(reply: str) -> bool | None:
@@ -123,14 +130,16 @@ class RigolVisaClient:
     def apply_channel(self, settings: ChannelSettings) -> list[str]:
         commands = build_channel_apply_commands(settings)
         self._log(f"SCPI 下发 CH{settings.channel}: {len(commands)} 条")
-        self.write_many(commands)
-        waveform = normalize_waveform(settings.waveform)
-        if waveform not in {"DC", "NOIS"}:
-            try:
-                reply = self.query(f":SOUR{settings.channel}:PHAS?").strip()
-                self._log(f"CH{settings.channel} 仪器相位读回: {reply}")
-            except Exception as exc:
-                self._log(f"CH{settings.channel} 相位读回失败: {exc}")
+        self._drain_system_errors_before_apply(settings.channel)
+        try:
+            self.write_many(commands)
+        except Exception:
+            if settings.burst.enabled:
+                self._best_effort_restore_burst(settings)
+            raise
+        self._try_wait_for_operation(f"CH{settings.channel} 配置")
+        self._log_apply_readbacks(settings)
+        self._raise_system_errors_after_apply(settings.channel)
         return commands
 
     def set_output(self, channel: int, enabled: bool) -> str:
@@ -180,6 +189,61 @@ class RigolVisaClient:
         self.write(command)
         return command
 
+    def _try_wait_for_operation(self, label: str) -> None:
+        try:
+            reply = self.query("*OPC?").strip()
+        except Exception as exc:
+            self._log(f"{label} *OPC? 确认失败（非致命）: {exc}")
+            return
+        if _parse_state_reply(reply) is not True:
+            self._log(f"{label} *OPC? 回复异常: {reply or '<empty>'}")
+
+    def _best_effort_restore_burst(self, settings: ChannelSettings) -> None:
+        channel = settings.channel
+        try:
+            self.write(build_burst_state_command(channel, True))
+            self.write(f":SOUR{channel}:BURS:TRIG:SOUR {settings.burst.trigger_source}")
+        except Exception as exc:
+            self._log(f"CH{channel} Burst 恢复开启失败（非致命）: {exc}")
+
+    def _log_apply_readbacks(self, settings: ChannelSettings) -> None:
+        for query in _build_apply_readback_queries(settings):
+            try:
+                reply = self.query(query).strip()
+            except Exception as exc:
+                self._log(f"CH{settings.channel} 参数回读失败 {query}: {exc}")
+                continue
+            self._log(f"CH{settings.channel} 参数回读 {query} = {reply}")
+
+    def _drain_system_errors_before_apply(self, channel: int) -> None:
+        result = self._read_system_errors(channel, "下发前")
+        for error in result.errors:
+            self._log(f"CH{channel} 清除历史 SCPI 错误: {error}")
+        if not result.cleared:
+            raise RuntimeError(f"CH{channel} 下发前 SCPI 错误队列未清空，已中止应用")
+
+    def _raise_system_errors_after_apply(self, channel: int) -> None:
+        result = self._read_system_errors(channel, "下发后")
+        if result.errors:
+            joined = "; ".join(result.errors)
+            raise RuntimeError(f"CH{channel} SCPI 错误: {joined}")
+        if not result.cleared:
+            raise RuntimeError(f"CH{channel} 下发后 SCPI 错误队列未清空")
+
+    def _read_system_errors(self, channel: int, label: str) -> SystemErrorReadResult:
+        errors: list[str] = []
+        for _attempt in range(SYSTEM_ERROR_DRAIN_LIMIT):
+            try:
+                reply = self.query_system_error()
+            except Exception as exc:
+                self._log(f"CH{channel} {label} SCPI 错误队列读取失败（非致命）: {exc}")
+                return SystemErrorReadResult(errors=errors, cleared=False)
+            if _is_clear_system_error(reply):
+                return SystemErrorReadResult(errors=errors, cleared=True)
+            errors.append(reply)
+        self._log(f"CH{channel} {label} SCPI 错误队列超过 {SYSTEM_ERROR_DRAIN_LIMIT} 条，已停止读取")
+        return SystemErrorReadResult(errors=errors, cleared=False)
+
     def _require_inst(self):
         if self._inst is None:
             raise RuntimeError("尚未连接信号发生器")
@@ -209,3 +273,35 @@ class RigolVisaClient:
                 raise VisaUnavailableError(
                     f"VISA 后端初始化失败: default={default_exc}; @py={py_exc}"
                 ) from py_exc
+
+
+def _is_clear_system_error(reply: str) -> bool:
+    token = reply.strip()
+    return token.startswith("0") or token.startswith("+0")
+
+
+def _build_apply_readback_queries(settings: ChannelSettings) -> list[str]:
+    ch = settings.channel
+    src = f":SOUR{ch}"
+    waveform = normalize_waveform(settings.waveform)
+    queries: list[str] = []
+    if waveform not in {"DC", "NOIS"}:
+        if settings.frequency_mode == "period":
+            queries.append(f"{src}:PER?")
+        else:
+            queries.append(f"{src}:FREQ?")
+        if waveform == "PULS":
+            queries.append(f"{src}:PULS:WIDT?")
+        queries.append(f"{src}:PHAS?")
+    if settings.burst.enabled:
+        queries.extend(
+            [
+                f"{src}:BURS:STAT?",
+                f"{src}:BURS:MODE?",
+                f"{src}:BURS:TRIG:SOUR?",
+                f"{src}:BURS:IDLE?",
+            ]
+        )
+        if settings.burst.mode == "TRIG":
+            queries.append(f"{src}:BURS:NCYC?")
+    return queries

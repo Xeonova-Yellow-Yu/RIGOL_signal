@@ -6,7 +6,15 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from .domain import BurstSettings, ChannelSettings
+from .domain import (
+    BurstSettings,
+    ChannelSettings,
+    amplitude_offset_from_high_low,
+    frequency_from_period,
+    high_low_from_amplitude_offset,
+    period_from_frequency,
+    pulse_width_from_duty,
+)
 
 
 CONFIG_VERSION = 3
@@ -250,11 +258,71 @@ def _channel_from_dict(data: Any, fallback: ChannelSettings) -> ChannelSettings:
     payload = _dataclass_payload(ChannelSettings, data, fallback)
     payload["burst"] = _burst_from_dict(data.get("burst"), fallback.burst)
     try:
-        settings = ChannelSettings(**payload)
+        settings = _sync_derived_fields(ChannelSettings(**payload))
         settings.validate()
         return settings
     except Exception:
         return fallback
+
+
+def _sync_derived_fields(settings: ChannelSettings) -> ChannelSettings:
+    return _sync_pulse_fields(_sync_level_fields(_sync_timing_fields(settings)))
+
+
+def _sync_timing_fields(settings: ChannelSettings) -> ChannelSettings:
+    if settings.frequency_mode == "period":
+        frequency_hz = frequency_from_period(settings.period_s)
+        return ChannelSettings(
+            **{
+                **settings.__dict__,
+                "frequency_hz": frequency_hz,
+            }
+        )
+    period_s = period_from_frequency(settings.frequency_hz)
+    return ChannelSettings(
+        **{
+            **settings.__dict__,
+            "period_s": period_s,
+        }
+    )
+
+
+def _sync_level_fields(settings: ChannelSettings) -> ChannelSettings:
+    if settings.level_mode == "high_low":
+        amplitude_vpp, offset_v = amplitude_offset_from_high_low(
+            settings.high_v,
+            settings.low_v,
+        )
+        return ChannelSettings(
+            **{
+                **settings.__dict__,
+                "amplitude_vpp": amplitude_vpp,
+                "offset_v": offset_v,
+            }
+        )
+    high_v, low_v = high_low_from_amplitude_offset(
+        settings.amplitude_vpp,
+        settings.offset_v,
+    )
+    return ChannelSettings(
+        **{
+            **settings.__dict__,
+            "high_v": high_v,
+            "low_v": low_v,
+        }
+    )
+
+
+def _sync_pulse_fields(settings: ChannelSettings) -> ChannelSettings:
+    if settings.waveform.strip().upper() not in {"PULS", "PULSE"}:
+        return settings
+    pulse_width_s = pulse_width_from_duty(settings.period_s, settings.duty_percent)
+    return ChannelSettings(
+        **{
+            **settings.__dict__,
+            "pulse_width_s": pulse_width_s,
+        }
+    )
 
 
 def _burst_from_dict(data: Any, fallback: BurstSettings) -> BurstSettings:

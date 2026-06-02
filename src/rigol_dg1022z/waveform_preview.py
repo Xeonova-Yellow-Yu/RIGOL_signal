@@ -28,6 +28,8 @@ class WaveformPreviewState:
     level_text: str
     burst_text: str
     output_text: str
+    channel_text: str = ""
+    load_text: str = ""
     duty_percent: float = 50.0
     ramp_symmetry_percent: float = 50.0
 
@@ -172,12 +174,17 @@ class WaveformPreview(QWidget):
         painter.setFont(tag_font)
         painter.setPen(QColor("#40546a"))
         detail = "  |  ".join(
-            (
+            part
+            for part in (
+                self._state.channel_text,
+                WAVEFORM_TITLES.get(waveform, waveform),
                 self._state.frequency_text,
                 self._state.level_text,
+                self._state.load_text,
                 self._state.burst_text,
                 self._state.output_text,
             )
+            if part
         )
-        detail_rect = QRectF(panel.left() + 24, panel.bottom() - 48, panel.width() - 48, 28)
-        painter.drawText(detail_rect, Qt.AlignVCenter | Qt.AlignLeft, detail)
+        detail_rect = QRectF(panel.left() + 24, panel.bottom() - 58, panel.width() - 48, 42)
+        painter.drawText(detail_rect, Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap, detail)

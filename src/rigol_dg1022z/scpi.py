@@ -74,8 +74,20 @@ def build_channel_apply_commands(
     waveform = normalize_waveform(settings.waveform)
 
     commands = [
-        f"{src}:FUNC {waveform}",
+        f"{out}:STAT OFF",
+        f"{src}:SWE:STAT OFF",
+        f"{src}:MOD:STAT OFF",
     ]
+    if not settings.burst.enabled:
+        commands.append(f"{src}:BURS:STAT OFF")
+    elif settings.burst.mode == "TRIG":
+        commands.extend(
+            [
+                f"{src}:BURS:MODE TRIG",
+                f"{src}:BURS:TRIG:SOUR MAN",
+            ]
+        )
+    commands.append(f"{src}:FUNC {waveform}")
 
     supports_timing = waveform not in {"DC", "NOIS"}
     supports_phase = waveform not in {"DC", "NOIS"}
@@ -109,28 +121,21 @@ def build_channel_apply_commands(
         commands.append(f"{src}:FUNC:SQU:DCYC {_num(settings.duty_percent)}")
     elif waveform == "PULS":
         commands.append(f"{src}:PULS:WIDT {_num(settings.pulse_width_s)}")
-        commands.append(f"{src}:PULS:DCYC {_num(settings.duty_percent)}")
     elif waveform == "RAMP":
         commands.append(f"{src}:FUNC:RAMP:SYMM {_num(settings.ramp_symmetry_percent)}")
 
-    commands.extend(_build_burst_commands(src, settings.burst))
     if supports_phase:
         commands.append(f"{src}:PHAS:ADJ {_num(settings.phase_deg)}")
+    commands.extend(_build_burst_commands(src, settings.burst))
     commands.append(f"{out}:STAT {_state(settings.output_enabled)}")
     return commands
 
 
 def _build_burst_commands(src: str, burst: BurstSettings) -> list[str]:
     if not burst.enabled:
-        return [
-            f"{src}:SWE:STAT OFF",
-            f"{src}:MOD:STAT OFF",
-            f"{src}:BURS:STAT OFF",
-        ]
+        return []
 
     commands = [
-        f"{src}:SWE:STAT OFF",
-        f"{src}:MOD:STAT OFF",
         f"{src}:BURS:MODE {burst.mode}",
         f"{src}:BURS:PHAS {_num(burst.phase_deg)}",
     ]
@@ -141,7 +146,6 @@ def _build_burst_commands(src: str, burst: BurstSettings) -> list[str]:
     if burst.mode == "GAT":
         commands.append(f"{src}:BURS:GATE:POL {burst.gate_polarity}")
 
-    commands.append(f"{src}:BURS:TRIG:SOUR {burst.trigger_source}")
     if burst.trigger_source == "INT" and burst.mode == "TRIG":
         commands.append(f"{src}:BURS:INT:PER {_num(burst.internal_period_s)}")
     elif burst.trigger_source == "EXT":
@@ -149,6 +153,7 @@ def _build_burst_commands(src: str, burst: BurstSettings) -> list[str]:
 
     commands.append(build_burst_idle_command(src, burst))
     commands.append(f"{src}:BURS:STAT ON")
+    commands.append(f"{src}:BURS:TRIG:SOUR {burst.trigger_source}")
     return commands
 
 

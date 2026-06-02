@@ -37,6 +37,70 @@ def scale_voltage_for_load_change(
     return float(value) * load_scale_factor(previous_load, new_load)
 
 
+def amplitude_offset_from_high_low(high_v: float, low_v: float) -> tuple[float, float]:
+    high = float(high_v)
+    low = float(low_v)
+    return high - low, (high + low) / 2.0
+
+
+def high_low_from_amplitude_offset(amplitude_vpp: float, offset_v: float) -> tuple[float, float]:
+    half_amplitude = float(amplitude_vpp) / 2.0
+    offset = float(offset_v)
+    return offset + half_amplitude, offset - half_amplitude
+
+
+def period_from_frequency(frequency_hz: float) -> float:
+    frequency = float(frequency_hz)
+    if frequency <= 0:
+        return 0.0
+    return 1.0 / frequency
+
+
+def frequency_from_period(period_s: float) -> float:
+    period = float(period_s)
+    if period <= 0:
+        return 0.0
+    return 1.0 / period
+
+
+def pulse_width_from_duty(
+    period_s: float,
+    duty_percent: float,
+    limits: InstrumentLimits | None = None,
+) -> float:
+    limits = limits or InstrumentLimits()
+    period = max(0.0, float(period_s))
+    duty = _clamp_float(
+        float(duty_percent),
+        limits.min_duty_percent,
+        limits.max_duty_percent,
+    )
+    maximum = min(limits.max_pulse_width_s, period * limits.max_duty_percent / 100.0)
+    if maximum < limits.min_pulse_width_s:
+        maximum = limits.min_pulse_width_s
+    return _clamp_float(period * duty / 100.0, limits.min_pulse_width_s, maximum)
+
+
+def duty_from_pulse_width(
+    period_s: float,
+    pulse_width_s: float,
+    limits: InstrumentLimits | None = None,
+) -> float:
+    limits = limits or InstrumentLimits()
+    period = float(period_s)
+    if period <= 0:
+        return limits.min_duty_percent
+    return _clamp_float(
+        float(pulse_width_s) / period * 100.0,
+        limits.min_duty_percent,
+        limits.max_duty_percent,
+    )
+
+
+def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 def _canonical_waveform(value: str) -> str:
     token = value.strip().upper().replace(" ", "_").replace("-", "_")
     aliases = {
@@ -181,11 +245,23 @@ class ChannelSettings:
                     f"幅度需在 {limits.min_amplitude_vpp:g}..{limits.max_amplitude_vpp:g} Vpp"
                 )
             self._validate_voltage("偏置", self.offset_v, limits)
+            if waveform != "DC":
+                high_v, low_v = high_low_from_amplitude_offset(
+                    self.amplitude_vpp,
+                    self.offset_v,
+                )
+                self._validate_voltage("高电平", high_v, limits)
+                self._validate_voltage("低电平", low_v, limits)
         else:
             self._validate_voltage("高电平", self.high_v, limits)
             self._validate_voltage("低电平", self.low_v, limits)
             if self.high_v <= self.low_v:
                 raise ValidationError("高电平必须大于低电平")
+            amplitude_vpp, _offset_v = amplitude_offset_from_high_low(self.high_v, self.low_v)
+            if not (limits.min_amplitude_vpp <= amplitude_vpp <= limits.max_amplitude_vpp):
+                raise ValidationError(
+                    f"高低电平差值需在 {limits.min_amplitude_vpp:g}..{limits.max_amplitude_vpp:g} Vpp"
+                )
 
         if waveform in {"SQU", "PULS"} and not (
             limits.min_duty_percent <= self.duty_percent <= limits.max_duty_percent

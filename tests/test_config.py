@@ -163,6 +163,74 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(ui.period_unit, "")
             self.assertEqual(ui.level_voltage_unit, "")
 
+    def test_level_fields_are_synchronized_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stale_levels.json"
+            path.write_text(
+                """
+                {
+                  "version": 3,
+                  "active_channel": 1,
+                  "visa_address": "TCPIP::192.168.1.191::INSTR",
+                  "channels": {
+                    "1": {
+                      "channel": 1,
+                      "waveform": "PULS",
+                      "level_mode": "high_low",
+                      "amplitude_vpp": 1.2,
+                      "offset_v": 0.0,
+                      "high_v": 1.05,
+                      "low_v": 0.0
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            loaded = load_app_config(path, default_app_config())
+            settings = loaded.channels[1]
+
+            self.assertEqual(settings.level_mode, "high_low")
+            self.assertAlmostEqual(settings.high_v, 1.05)
+            self.assertAlmostEqual(settings.low_v, 0.0)
+            self.assertAlmostEqual(settings.amplitude_vpp, 1.05)
+            self.assertAlmostEqual(settings.offset_v, 0.525)
+
+    def test_timing_and_pulse_fields_are_synchronized_on_load(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stale_timing.json"
+            path.write_text(
+                """
+                {
+                  "version": 3,
+                  "active_channel": 1,
+                  "visa_address": "TCPIP::192.168.1.191::INSTR",
+                  "channels": {
+                    "1": {
+                      "channel": 1,
+                      "waveform": "PULS",
+                      "frequency_mode": "period",
+                      "frequency_hz": 1234.0,
+                      "period_s": 4.0,
+                      "duty_percent": 80.0,
+                      "pulse_width_s": 0.001
+                    }
+                  }
+                }
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            loaded = load_app_config(path, default_app_config())
+            settings = loaded.channels[1]
+
+            self.assertEqual(settings.frequency_mode, "period")
+            self.assertAlmostEqual(settings.period_s, 4.0)
+            self.assertAlmostEqual(settings.frequency_hz, 0.25)
+            self.assertAlmostEqual(settings.duty_percent, 80.0)
+            self.assertAlmostEqual(settings.pulse_width_s, 3.2)
+
     def test_missing_or_invalid_config_uses_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fallback = default_app_config()

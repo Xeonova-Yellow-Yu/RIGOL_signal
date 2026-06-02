@@ -57,12 +57,55 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR1:BURS:TRIG:SOUR MAN", commands)
         self.assertIn(":SOUR1:BURS:IDLE FPT", commands)
         self.assertEqual(commands[-1], ":OUTP1:STAT ON")
+        self.assertEqual(commands[0], ":OUTP1:STAT OFF")
+        self.assertNotIn(":SOUR1:BURS:STAT OFF", commands)
         load_idx = commands.index(":OUTP1:LOAD 50")
         volt_high_idx = commands.index(":SOUR1:VOLT:HIGH 3.3")
         phase_idx = commands.index(":SOUR1:PHAS:ADJ 45")
         burs_on_idx = commands.index(":SOUR1:BURS:STAT ON")
+        source_indices = [
+            index
+            for index, command in enumerate(commands)
+            if command == ":SOUR1:BURS:TRIG:SOUR MAN"
+        ]
         self.assertLess(load_idx, volt_high_idx)
-        self.assertLess(burs_on_idx, phase_idx)
+        self.assertLess(phase_idx, burs_on_idx)
+        self.assertLess(source_indices[0], commands.index(":SOUR1:FUNC SQU"))
+        self.assertLess(burs_on_idx, source_indices[-1])
+
+    def test_enabled_external_burst_never_sends_burst_off(self) -> None:
+        settings = ChannelSettings(
+            channel=1,
+            waveform="PULS",
+            frequency_mode="period",
+            period_s=4.0,
+            level_mode="high_low",
+            high_v=1.05,
+            low_v=0.0,
+            pulse_width_s=3.2,
+            output_enabled=False,
+            burst=BurstSettings(
+                enabled=True,
+                mode="TRIG",
+                cycles=1,
+                trigger_source="EXT",
+                trigger_slope="POS",
+                idle_mode="USER",
+                idle_point=0,
+            ),
+        )
+
+        commands = build_channel_apply_commands(settings)
+
+        self.assertNotIn(":SOUR1:BURS:STAT OFF", commands)
+        temp_source_idx = commands.index(":SOUR1:BURS:TRIG:SOUR MAN")
+        func_idx = commands.index(":SOUR1:FUNC PULS")
+        slope_idx = commands.index(":SOUR1:BURS:TRIG:SLOP POS")
+        burst_on_idx = commands.index(":SOUR1:BURS:STAT ON")
+        final_source_idx = commands.index(":SOUR1:BURS:TRIG:SOUR EXT")
+        self.assertLess(temp_source_idx, func_idx)
+        self.assertLess(slope_idx, burst_on_idx)
+        self.assertLess(burst_on_idx, final_source_idx)
 
     def test_pulse_period_and_width_commands(self) -> None:
         settings = ChannelSettings(
@@ -79,10 +122,11 @@ class ScpiBuilderTests(unittest.TestCase):
         self.assertIn(":SOUR2:FUNC PULS", commands)
         self.assertIn(":SOUR2:PER 0.002", commands)
         self.assertIn(":SOUR2:PULS:WIDT 0.0005", commands)
-        self.assertIn(":SOUR2:PULS:DCYC 50", commands)
+        self.assertNotIn(":SOUR2:PULS:DCYC 50", commands)
         self.assertIn(":SOUR2:PHAS:ADJ 0", commands)
         self.assertNotIn(":SOUR2:PHAS:SYNC", commands)
         self.assertEqual(commands[-1], ":OUTP2:STAT OFF")
+        self.assertEqual(commands[0], ":OUTP2:STAT OFF")
         load_idx = commands.index(":OUTP2:LOAD INF")
         volt_idx = commands.index(":SOUR2:VOLT 2")
         phase_idx = commands.index(":SOUR2:PHAS:ADJ 0")
@@ -109,7 +153,8 @@ class ScpiBuilderTests(unittest.TestCase):
 
         commands = build_channel_apply_commands(settings)
 
-        self.assertEqual(commands[0], ":SOUR1:FUNC DC")
+        self.assertIn(":SOUR1:FUNC DC", commands)
+        self.assertEqual(commands[0], ":OUTP1:STAT OFF")
         self.assertIn(":SOUR1:VOLT:OFFS 1.25", commands)
         self.assertNotIn(":SOUR1:FREQ 1000", commands)
         self.assertNotIn(":SOUR1:PHAS:ADJ 90", commands)
