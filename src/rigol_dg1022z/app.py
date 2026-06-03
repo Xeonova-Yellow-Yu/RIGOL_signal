@@ -97,7 +97,8 @@ QListView#ComboPopupView::item:selected {
 
 CONNECTION_CONTROL_HEIGHT = 34
 CONNECTION_BUTTON_WIDTH = 68
-CONNECTION_ROW_LABEL_WIDTH = 110
+CONNECTION_DEVICE_LABEL_WIDTH = 76
+CONNECTION_ROW_LABEL_WIDTH = 92
 CONNECTION_ADDRESS_MIN_WIDTH = 210
 CONNECTION_ADDRESS_MAX_WIDTH = 210
 CONNECTION_CHANNEL_BUTTON_WIDTH = 120
@@ -375,11 +376,13 @@ class ConnectionChannelCard(QFrame):
         self.setEnabled(connected)
         self.setProperty("active", active)
         self.setProperty("connected", connected)
-        self.setProperty("outputOn", output_on)
+        self.setProperty("outputOn", "true" if output_on else "false")
         self.output.setText("输出 ON" if output_on else "输出 OFF")
-        self.output.setProperty("on", output_on)
-        _repolish(self.output)
+        self.output.setProperty("state", "on" if output_on else "off")
+        self.output.setProperty("on", "true" if output_on else "false")
         _repolish(self)
+        _repolish(self.title)
+        _repolish(self.output)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.isEnabled():
@@ -657,6 +660,11 @@ class MainWindow(QMainWindow):
             address_box.lineEdit().setPlaceholderText("输入 VISA 地址")
         self._populate_address_combo(address_box, address)
 
+        device_label = ConnectionStatusLabel(row_host)
+        device_label.setObjectName("ConnectionDeviceLabel")
+        device_label.setFixedSize(CONNECTION_DEVICE_LABEL_WIDTH, CONNECTION_CONTROL_HEIGHT)
+        device_label.setAlignment(Qt.AlignCenter)
+
         row_label = ConnectionStatusLabel(row_host)
         row_label.setObjectName("ConnectionRowLabel")
         row_label.setFixedSize(CONNECTION_ROW_LABEL_WIDTH, CONNECTION_CONTROL_HEIGHT)
@@ -672,6 +680,7 @@ class MainWindow(QMainWindow):
             channel_button.setToolTip(f"切换到此信号发生器 CH{channel}")
             channel_buttons[channel] = channel_button
 
+        row_layout.addWidget(device_label)
         row_layout.addWidget(row_label)
         row_layout.addWidget(address_box)
         row_layout.addWidget(connect_button)
@@ -681,6 +690,7 @@ class MainWindow(QMainWindow):
         row_data: dict[str, QWidget] = {
             "grid_row": len(self.connection_rows),
             "host": row_host,
+            "device_label": device_label,
             "row_label": row_label,
             "address": address_box,
             "button": connect_button,
@@ -698,6 +708,7 @@ class MainWindow(QMainWindow):
         address_box.currentTextChanged.connect(self._save_config)
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._set_active_connection_row(r))
         address_box.currentTextChanged.connect(lambda _text="", r=row_data: self._update_connection_row_action(r))
+        device_label.clicked.connect(lambda r=row_data: self._activate_connection_row(r))
         row_label.clicked.connect(lambda r=row_data: self._activate_connection_row(r))
         for _channel, channel_button in channel_buttons.items():
             channel_button.selected.connect(
@@ -705,6 +716,7 @@ class MainWindow(QMainWindow):
             )
         connect_button.clicked.connect(lambda _checked=False, r=row_data: self._toggle_connection(r))
         self._rebuild_connection_grid()
+        self._renumber_connection_row_labels()
         self._set_connection_row_state(row_data, False, "未连接")
         self._update_remove_address_state()
         return row_data
@@ -740,7 +752,15 @@ class MainWindow(QMainWindow):
         if focus is None:
             return None
         for row in self.connection_rows:
-            for key in ("host", "address", "row_label", "button", "channel_1", "channel_2"):
+            for key in (
+                "host",
+                "device_label",
+                "address",
+                "row_label",
+                "button",
+                "channel_1",
+                "channel_2",
+            ):
                 widget = row.get(key)
                 if isinstance(widget, QWidget) and (
                     focus is widget or widget.isAncestorOf(focus)
@@ -840,13 +860,19 @@ class MainWindow(QMainWindow):
         try:
             index = self.connection_rows.index(row) + 1
         except ValueError:
-            return "设备1"
-        return f"设备{index}"
+            return "设备 1"
+        return f"设备 {index}"
 
     def _update_connection_row_label(self, row: dict[str, QWidget]) -> None:
         label = row.get("row_label")
         if not isinstance(label, QLabel):
             return
+        device_label = row.get("device_label")
+        if isinstance(device_label, QLabel):
+            device_label.setText(self._connection_row_device_name(row))
+            device_label.setToolTip(
+                "点击切换到此信号发生器" if row.get("_connected", False) else "点击选中此设备行"
+            )
         display = str(row.get("_status_display", "未连接"))
         address = self._connection_row_address(row)
         connected = bool(row.get("_connected", False))
@@ -2923,6 +2949,11 @@ QLabel#ConnectionChannelOutputBadge {
     font-size: 10px;
     font-weight: 800;
 }
+QLabel#ConnectionChannelOutputBadge[state="off"] {
+    background: #eef2f7;
+    border-color: #d9e1eb;
+    color: #7f8b9a;
+}
 QLabel#ConnectionChannelOutputBadge[on="true"] {
     background: #e8f6ee;
     border-color: #bfe5cf;
@@ -2972,6 +3003,14 @@ QWidget#ConnectionGridHost {
 }
 QWidget#ConnectionRowHost {
     background: transparent;
+}
+QLabel#ConnectionDeviceLabel {
+    color: #2f4a68;
+    background: #f3f7fb;
+    border: 1px solid #d9e4ef;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 800;
 }
 QLabel#ConnectionRowLabel {
     color: #607387;
